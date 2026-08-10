@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ -z "${TEXTSTRATA_PYTHON:-}" && -x ../.venv/bin/python ]]; then
+  TEXTSTRATA_PYTHON=../.venv/bin/python
+else
+  TEXTSTRATA_PYTHON=${TEXTSTRATA_PYTHON:-python3}
+fi
+
+PYTHONPATH=src "$TEXTSTRATA_PYTHON" -m unittest discover -s tests -q
+"$TEXTSTRATA_PYTHON" -m compileall -q src
+PYTHONPATH=src "$TEXTSTRATA_PYTHON" scripts/phase5_backup_restore.py

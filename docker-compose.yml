@@ -1,0 +1,64 @@
+services:
+  textstrata:
+    build:
+      context: .
+      target: textstrata
+      args:
+        TEXTSTRATA_EXTRAS: documents,images,youtube,audio
+    image: textstrata:latest
+    container_name: textstrata
+    entrypoint: ["python3", "-m", "textstrata"]
+    environment:
+      - TEXTSTRATA_WORKSPACE=/data/textstrata-store
+      - OLLAMA_HOST=http://ollama:11434
+      - TEXTSTRATA_LLM_MODEL=${TEXTSTRATA_LLM_MODEL:-deepseek-r1:1.5b}
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - textstrata-data:/data
+      - ./textstrata-store:/data/textstrata-store
+    depends_on:
+      ollama:
+        condition: service_healthy
+    stdin_open: true
+    tty: true
+    profiles:
+      - full
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: textstrata-ollama
+    environment:
+      - OLLAMA_KEEP_ALIVE=24h
+    volumes:
+      - ollama-models:/root/.ollama
+    ports:
+      - "11434:11434"
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    profiles:
+      - full
+
+  textstrata-lite:
+    build:
+      context: .
+      target: textstrata-lite
+    image: textstrata:latest
+    container_name: textstrata-lite
+    entrypoint: ["python3", "-m", "textstrata"]
+    environment:
+      - TEXTSTRATA_WORKSPACE=/data/textstrata-store
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./textstrata-store:/data/textstrata-store
+    stdin_open: true
+    tty: true
+    profiles:
+      - lite
+
+volumes:
+  textstrata-data:
+  ollama-models:

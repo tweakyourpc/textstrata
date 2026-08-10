@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "textstrata_url": "http://127.0.0.1:8700",
+  "control": {
+    "remote_config": "",
+    "status_target": "gdrive:Successor-Control/status"
+  },
+  "backup": {
+    "enabled": true,
+    "target": "gdrive:Successor-Control/md-mirror",
+    "roots": ["normalized"],
+    "include_tags": [],
+    "exclude_tags": ["private", "draft"],
+    "include_untagged": true
+  },
+  "ingest": {
+    "enabled": false,
+    "remote_queue": "gdrive:Successor-Control/control/queue.json",
+    "poll_interval_minutes": 10,
+    "auto_approve_submissions": false,
+    "status_target": "gdrive:Successor-Control/status"
+  }
+}

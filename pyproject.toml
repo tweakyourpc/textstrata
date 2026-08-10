@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "textstrata"
+dynamic = ["version"]
+description = "Layered, local-first knowledge infrastructure for typed, policy-aware Markdown."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["pyyaml>=6.0"]
+
+# System-level prerequisites (install via apt/pacman/brew):
+#   images   → tesseract-ocr   (OCR text extraction)
+#   documents→ (none beyond markitdown)
+#   youtube  → yt-dlp          (already a pip dep)
+#   audio    → ffmpeg          (decoding + 16 kHz mono transcode for whisper)
+#              Any whisper CLI on PATH works; the setup page reports the
+#              detected transcription tool and its installation guidance.
+[project.optional-dependencies]
+documents = ["markitdown[all]"]
+images = ["Pillow>=10"]
+youtube = ["yt-dlp"]
+audio = ["whisper-ctranslate2>=0.5"]
+all = [
+  "markitdown[all]",
+  "Pillow>=10",
+  "yt-dlp",
+  "whisper-ctranslate2>=0.5",
+]
+
+[tool.setuptools.dynamic]
+version = {attr = "textstrata.__version__"}
+# Requirements.txt is NOT used; see optional-dependencies above.
+
+[project.scripts]
+textstrata = "textstrata.__main__:main"
+textstrata-mcp = "textstrata.mcp_server:main"
+# Compatibility entry points for existing automation during migration.
+fabric = "textstrata.__main__:main"
+fabric-mcp = "textstrata.mcp_server:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff.lint]
+ignore = ["E501"]
+select = ["E", "F", "W"]
+
+[tool.ruff.format]
+line-ending = "lf"
