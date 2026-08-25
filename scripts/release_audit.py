@@ -13,12 +13,17 @@ PRIVATE_NAMES = {"AGENTS.md", "MASTER_PROMPT.md", "textstrata-server.service"}
 # Agent-run documents under docs/: the contract, its ledgers, per-task rulings, blast-radius
 # audits and inter-agent handoffs. Named families rather than fixed names because rulings,
 # ledgers and handoffs are added as the run proceeds, and a fixed list goes stale silently.
+# baseline-summary.md is a standing exception: a one-off review document that belongs to no
+# family, so no glob can reach it. It was caught only incidentally while it still carried
+# /home paths, and began passing both gates silently once those were cleaned.
+# scripts/create_release_snapshot.py carries the same families; keep the two in step.
 PRIVATE_NAME_PATTERNS = (
     re.compile(r"\AAGENT-CONTRACT\.md\Z"),
     re.compile(r"\A(?:hardening-)?ledger[a-z0-9_.-]*\.md\Z"),
     re.compile(r"\Aruling-[a-z0-9_.-]+\.md\Z"),
     re.compile(r"\Ahandoff-[a-z0-9_.-]+\.md\Z"),
     re.compile(r"\Atask\d+[a-z]?-blast-radius\.md\Z"),
+    re.compile(r"\Abaseline-summary\.md\Z"),
 )
 PRIVATE_PATTERNS = (
     re.compile(r"/home/[A-Za-z0-9_.-]+/"),
