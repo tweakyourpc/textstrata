@@ -189,6 +189,104 @@ def verify_backup_manifest(root: str | Path, manifest: list[Mapping[str, Any]] |
     }
 
 
+def load_backup_manifest(path: str | Path) -> dict[str, Any]:
+    """Load and validate a versioned backup manifest without touching a workspace."""
+    manifest_path = Path(path).expanduser().resolve()
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"invalid backup manifest: {manifest_path}") from exc
+    if not isinstance(payload, dict) or payload.get("version") != 1 or not isinstance(payload.get("files"), list):
+        raise ValueError("backup manifest must be version 1 with a files list")
+    for entry in payload["files"]:
+        if not isinstance(entry, dict) or not entry.get("relative_path") or not entry.get("sha256"):
+            raise ValueError("backup manifest contains an invalid file entry")
+    return payload
+
+
+def backup_preview(root: str | Path, *, config: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the exact local file set a backup would send, without writing state."""
+    workspace = Path(root).expanduser().resolve()
+    backup = config.get("backup", {})
+    target = str(backup.get("target") or "").strip() if isinstance(backup, Mapping) else ""
+    entries = select_backup_files(workspace, config)
+    manifest = [entry.__dict__ for entry in entries]
+    previous_path = workspace / ".fabric" / "control-state" / "backup-manifest.json"
+    previous = None
+    if previous_path.is_file():
+        try:
+            previous_payload = load_backup_manifest(previous_path)
+            previous = verify_backup_manifest(workspace, previous_payload["files"])
+        except ValueError as exc:
+            previous = {"ok": False, "error": str(exc)}
+    return {
+        "enabled": bool(backup.get("enabled", True)) if isinstance(backup, Mapping) else False,
+        "target": target,
+        "files": len(manifest),
+        "manifest": manifest,
+        "previous_manifest": previous,
+        "read_only": True,
+    }
+
+
+def _copy_manifest_files(source: Path, destination: Path, manifest: list[Mapping[str, Any]]) -> None:
+    for raw in manifest:
+        relative = Path(str(raw["relative_path"]))
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ValueError(f"backup manifest path escapes workspace: {relative}")
+        source_path = (source / relative).resolve()
+        target_path = (destination / relative).resolve()
+        try:
+            source_path.relative_to(source)
+            target_path.relative_to(destination)
+        except ValueError as exc:
+            raise ValueError(f"backup manifest path escapes workspace: {relative}") from exc
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_path, target_path)
+
+
+def restore_preview(source: str | Path) -> dict[str, Any]:
+    """Inspect a local backup directory before any restore mutation."""
+    backup_root = Path(source).expanduser().resolve()
+    if not backup_root.is_dir():
+        raise ValueError("restore source must be a local backup directory containing backup-manifest.json")
+    payload = load_backup_manifest(backup_root / "backup-manifest.json")
+    verification = verify_backup_manifest(backup_root, payload["files"])
+    return {
+        "source": str(backup_root),
+        "generated_at": payload.get("generated_at", ""),
+        "files": len(payload["files"]),
+        "verification": verification,
+        "read_only": True,
+    }
+
+
+def restore_workspace(source: str | Path, destination: str | Path) -> dict[str, Any]:
+    """Restore a verified local backup into a new, non-existing workspace."""
+    backup_root = Path(source).expanduser().resolve()
+    target = Path(destination).expanduser().resolve()
+    if backup_root == target:
+        raise ValueError("restore destination must differ from the backup source")
+    if target.exists() and any(target.iterdir()):
+        raise ValueError("restore destination must be new or empty")
+    preview = restore_preview(backup_root)
+    if not preview["verification"]["ok"]:
+        raise ValueError(f"backup verification failed: {preview['verification']}")
+    target.mkdir(parents=True, exist_ok=True)
+    payload = load_backup_manifest(backup_root / "backup-manifest.json")
+    _copy_manifest_files(backup_root, target, payload["files"])
+    verification = verify_backup_manifest(target, payload["files"])
+    if not verification["ok"]:
+        raise RuntimeError(f"restored workspace verification failed: {verification}")
+    return {
+        "restored": True,
+        "source": str(backup_root),
+        "destination": str(target),
+        "files": len(payload["files"]),
+        "verification": verification,
+    }
+
+
 def _state_dir(root: Path) -> Path:
     path = root / ".fabric" / "control-state"
     path.mkdir(parents=True, exist_ok=True)

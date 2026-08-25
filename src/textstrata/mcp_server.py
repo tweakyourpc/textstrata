@@ -16,9 +16,11 @@ from typing import Any
 from . import __version__, activity, classify, linking, operations, research, review, similarity
 from .analyze import analyze as analyze_gaps
 from .catalog import Catalog
+from .control import backup_preview, backup_workspace, control_doctor, load_config, load_effective_config, restore_preview, restore_workspace
 from .ingest import build_item, ingest_text
 from .models import TextStrataItem
 from .presentation import PAPER_SKIN, RenderContext, render_item_html, render_text
+from .retrieval import retrieve
 from .store import TextStrataStore
 from .validate import validate
 from .workspace import apply_config_environment, load_cascading_config, resolve_workspace
@@ -469,6 +471,19 @@ class TextStrataMCP:
                 },
             },
             {
+                "name": "inspect_retrieval",
+                "description": "Inspect the shared TextStrata retrieval trace and evidence gate without invoking an LLM.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"},
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 20},
+                    },
+                    "required": ["query"],
+                    "additionalProperties": False,
+                },
+            },
+            {
                 "name": "list_items",
                 "description": "List all published normalized items.",
                 "inputSchema": {
@@ -596,6 +611,46 @@ class TextStrataMCP:
                 "inputSchema": {
                     "type": "object",
                     "properties": {},
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "control_status",
+                "description": "Read-only control-plane configuration and transport status.",
+                "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+            },
+            {
+                "name": "backup_preview",
+                "description": "Preview the exact tag-filtered backup file set without writing or uploading anything.",
+                "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+            },
+            {
+                "name": "run_backup",
+                "description": "Run the configured external backup after an explicit confirmation.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"confirm": {"type": "boolean", "const": True}},
+                    "required": ["confirm"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "restore_preview",
+                "description": "Verify a local backup directory before restore; this is read-only.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"source": {"type": "string"}},
+                    "required": ["source"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "restore_workspace",
+                "description": "Restore a verified local backup into a new destination after explicit confirmation.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"source": {"type": "string"}, "destination": {"type": "string"}, "confirm": {"type": "boolean", "const": True}},
+                    "required": ["source", "destination", "confirm"],
                     "additionalProperties": False,
                 },
             },
@@ -753,12 +808,19 @@ class TextStrataMCP:
             self._invalidate_cache()
             limit = max(1, min(int(arguments.get("limit", 5)), 20))
             self.catalog.rescan(self.store)
-            hits = self.catalog.search(arguments["query"])[:limit]
+            result = retrieve(arguments["query"], self.catalog, self.store, limit=limit)
             text = "\n".join(
-                f"{hit.id} [{hit.type}] {hit.title}\n{hit.snippet.strip()}"
-                for hit in hits
+                f"{candidate.item_id} [{candidate.type}] {candidate.title}\n{candidate.chunk.strip()}"
+                for candidate in result.candidates
             ) or "no matches"
             return {"content": [{"type": "text", "text": text}]}
+
+        if name == "inspect_retrieval":
+            self._invalidate_cache()
+            limit = max(1, min(int(arguments.get("limit", 5)), 20))
+            self.catalog.rescan(self.store)
+            result = retrieve(arguments["query"], self.catalog, self.store, limit=limit)
+            return {"content": [{"type": "text", "text": json.dumps(result.to_dict(), ensure_ascii=False, indent=2)}]}
 
         if name == "list_items":
             items = self._all_items()
@@ -970,6 +1032,34 @@ class TextStrataMCP:
             parts.append(f"  Revision limit: {settings['revision_limit']}")
             parts.append(f"  Root:           {settings['paths']['root']}")
             return {"content": [{"type": "text", "text": "\n".join(parts)}]}
+
+        if name == "control_status":
+            config, config_file = load_config(self.store.root)
+            return {"content": [{"type": "text", "text": json.dumps(control_doctor(self.store.root, config=config, config_file=config_file), ensure_ascii=False, indent=2)}]}
+
+        if name == "backup_preview":
+            config, config_file = load_config(self.store.root)
+            result = backup_preview(self.store.root, config=config)
+            result["config"] = str(config_file)
+            return {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False, indent=2)}]}
+
+        if name == "run_backup":
+            if arguments.get("confirm") is not True:
+                raise ValueError("run_backup requires confirm=true")
+            config, config_file = load_effective_config(self.store.root)
+            result = backup_workspace(self.store.root, config=config)
+            result["config"] = str(config_file)
+            return {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False, indent=2)}]}
+
+        if name == "restore_preview":
+            result = restore_preview(arguments["source"])
+            return {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False, indent=2)}]}
+
+        if name == "restore_workspace":
+            if arguments.get("confirm") is not True:
+                raise ValueError("restore_workspace requires confirm=true")
+            result = restore_workspace(arguments["source"], arguments["destination"])
+            return {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False, indent=2)}]}
 
         if name == "delete_item":
             item_id = arguments["item_id"]

@@ -15,11 +15,12 @@ from pathlib import Path
 
 from . import activity, classify, embeddings, frontmatter
 from .catalog import Catalog
-from .control import backup_workspace, control_doctor, load_config, load_effective_config, process_approved_ingest
-from .ingest import build_item, ingest_file
+from .control import backup_workspace, control_doctor, load_config, load_effective_config, process_approved_ingest, restore_preview, restore_workspace
+from .ingest import _update_file, build_item, ingest_file
 from .linking import build_links, links_for
 from .presentation import PAPER_SKIN, RenderContext, render_item_html, render_text
 from .research import daily_briefing, relate, research, synthesize
+from .retrieval import retrieve
 from .store import TextStrataStore
 from .validate import validate
 from .workspace import apply_config_environment, load_cascading_config, resolve_workspace
@@ -74,6 +75,31 @@ def cmd_ingest(paths: list[str]) -> int:
             cat.index_item(res.item)
     cat.close()
     return 0
+
+
+def cmd_retrieval_inspect(query: str, json_output: bool = False, limit: int = 5) -> int:
+    """Show the shared retrieval trace without invoking an LLM."""
+    store = TextStrataStore(_root())
+    cat = _catalog(_root())
+    try:
+        result = retrieve(query, cat, store, limit=limit)
+    finally:
+        cat.close()
+    if json_output:
+        print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
+    else:
+        print(f"query: {result.query}")
+        print(f"strategy: {result.strategy}")
+        print(f"terms: {', '.join(result.query_terms) or '(none)'}")
+        state = "sufficient" if result.sufficient_evidence else "gap"
+        print(f"evidence: {result.evidence_score:.2f} ({state})")
+        print(f"reason: {result.reason}")
+        for candidate in result.candidates:
+            print(f"  {candidate.score:.2f}  {candidate.item_id}  [{candidate.type}]  {candidate.title}")
+            print(f"    matched: {', '.join(candidate.matched_terms) or '(none)'}")
+            preview = candidate.chunk[:240].replace("\n", " ")
+            print(f"    chunk: {preview}")
+    return 0 if result.sufficient_evidence else 1
 
 
 def cmd_vault_import(path: str, overwrite: bool = False) -> int:
@@ -387,11 +413,26 @@ def cmd_doctor(json_output: bool = False) -> int:
     return 0 if status["core_ready"] else 1
 
 
-def cmd_control(action: str, *, dry_run: bool = False) -> int:
+def cmd_control(action: str, *, dry_run: bool = False, source: str | None = None, destination: str | None = None) -> int:
     root = _root()
+    if action == "restore-preview":
+        if not source:
+            raise ValueError("control restore-preview requires --source")
+        result = restore_preview(source)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+    if action == "restore":
+        if not source or not destination:
+            raise ValueError("control restore requires --source and --destination")
+        result = restore_workspace(source, destination)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
     config, config_file = load_config(root) if action == "doctor" else load_effective_config(root)
     if action == "doctor":
         result = control_doctor(root, config=config, config_file=config_file)
+    elif action == "backup-preview":
+        from .control import backup_preview
+        result = backup_preview(root, config=config)
     elif action == "backup":
         result = backup_workspace(root, config=config, dry_run=dry_run)
     elif action == "ingest":
@@ -466,23 +507,22 @@ def cmd_stats() -> int:
 
 
 def cmd_ask(query: str, model: str | None = None) -> int:
-    from .research import _fts_safe
     store = TextStrataStore(_root())
     cat = _catalog(_root())
-    hits = cat.search(_fts_safe(query))
-    cat.close()
-    if not hits:
+    try:
+        retrieval = retrieve(query, cat, store, limit=5)
+    finally:
+        cat.close()
+    if not retrieval.candidates:
         print("No relevant content found in the knowledge base.")
         return 1
-    items = []
-    for h in hits[:5]:
-        path = store.normalized_path_for_id(h.id)
-        if path:
-            item, _, _ = build_item(path.read_text(encoding="utf-8"), fallback_id=h.id)
-            items.append(item)
+    if not retrieval.sufficient_evidence:
+        print(f"Evidence gap: {retrieval.reason}.")
+        print("No answer was generated from weakly matched context.")
+        return 1
     context = "\n\n".join(
-        f"---\nid: {it.id}\ntitle: {it.title}\ntype: {it.type.value}\ntags: {', '.join(it.tags)}\n---\n{it.body[:2000]}"
-        for it in items
+        f"---\nid: {candidate.item_id}\ntitle: {candidate.title}\ntype: {candidate.type}\ntags: {', '.join(candidate.tags)}\n---\n{candidate.chunk}"
+        for candidate in retrieval.candidates
     )
     model_name = model or os.environ.get("TEXTSTRATA_LLM_MODEL") or os.environ.get("FABRIC_LLM_MODEL", "phi3:mini")
     prompt = f"""You are answering based on a personal knowledge base. Use ONLY the context below to answer. If the context doesn't contain enough information, say so. Cite sources by their item ID in brackets like [item-id].
@@ -511,8 +551,8 @@ Answer concisely (2-4 sentences) with citations:"""
         print(f"Could not reach Ollama at localhost:11434 ({exc})")
         print()
         print("Relevant items from the knowledge base:")
-        for it in items:
-            print(f"  [{it.id}] {it.title} ({it.type.value})")
+        for candidate in retrieval.candidates:
+            print(f"  [{candidate.item_id}] {candidate.title} ({candidate.type})")
     return 0
 
 
@@ -761,7 +801,7 @@ def cmd_completion(shell: str) -> int:
         print("""_textstrata_completions() {
     local cur prev words cword
     _init_completion || return
-    local commands="ingest preview render rebuild search links score analyze check log stats ask research synthesize daily relate completion migrate watch mcp web"
+    local commands="ingest preview render rebuild search retrieval-inspect links score analyze check log stats ask research synthesize daily relate completion migrate watch mcp web"
     if [[ $cword -eq 1 ]]; then
         COMPREPLY=($(compgen -W "$commands" -- "$cur"))
         return
@@ -771,6 +811,7 @@ def cmd_completion(shell: str) -> int:
         preview) COMPREPLY=($(compgen -f -- "$cur")) ;;
         render) COMPREPLY=() ;;
         search) COMPREPLY=($(compgen -W "--semantic --json" -- "$cur")) ;;
+        retrieval-inspect) COMPREPLY=($(compgen -W "--limit --json" -- "$cur")) ;;
         links) ;;
         score) COMPREPLY=($(compgen -W "--json --clusters" -- "$cur")) ;;
         analyze) COMPREPLY=($(compgen -W "--json" -- "$cur")) ;;
@@ -795,6 +836,7 @@ _textstrata() {
         'render:render a normalized item'
         'rebuild:rebuild the FTS catalog'
         'search:full-text and semantic search'
+        'retrieval-inspect:inspect the shared retrieval trace'
         'links:show outgoing cross-links for an item'
         'score:knowledge scores and communities'
         'analyze:gap/coverage analysis report'
@@ -815,11 +857,12 @@ _textstrata() {
 }
 compdef _textstrata textstrata""")
     elif shell == "fish":
-        print("""complete -c textstrata -f -a 'ingest preview render rebuild search links score analyze check log stats ask research synthesize daily relate completion watch mcp web'
+        print("""complete -c textstrata -f -a 'ingest preview render rebuild search retrieval-inspect links score analyze check log stats ask research synthesize daily relate completion watch mcp web'
 complete -c textstrata -n '__fish_use_subcommand' -a 'ingest' -d 'ingest one or more files'
 complete -c textstrata -n '__fish_use_subcommand' -a 'preview' -d 'inspect a file before ingest'
 complete -c textstrata -n '__fish_use_subcommand' -a 'render' -d 'render a normalized item'
 complete -c textstrata -n '__fish_use_subcommand' -a 'search' -d 'full-text and semantic search'
+complete -c textstrata -n '__fish_use_subcommand' -a 'retrieval-inspect' -d 'inspect the shared retrieval trace'
 complete -c textstrata -n '__fish_seen_subcommand_from search' -s s -l semantic -d 'semantic (embedding-based) search'
 complete -c textstrata -n '__fish_use_subcommand' -a 'links' -d 'show outgoing cross-links for an item'
 complete -c textstrata -n '__fish_use_subcommand' -a 'score' -d 'knowledge scores and communities'
@@ -857,12 +900,12 @@ def cmd_watch(directories: list[str]) -> int:
             if event.is_directory or not event.src_path.endswith(".md"):
                 return
             Path(event.src_path)  # validate
-            self._ingest(event.src_path)
+            self._ingest(event.src_path, update=False)
         def on_modified(self, event):
             if event.is_directory or not event.src_path.endswith(".md"):
                 return
-            self._ingest(event.src_path)
-        def _ingest(self, path):
+            self._ingest(event.src_path, update=True)
+        def _ingest(self, path, *, update):
             import time as _time
             now = _time.time()
             last = self._debounce.get(path, 0)
@@ -870,7 +913,7 @@ def cmd_watch(directories: list[str]) -> int:
                 return
             self._debounce[path] = now
             try:
-                res = ingest_file(self.store, path)
+                res = _update_file(self.store, path) if update else ingest_file(self.store, path)
                 ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
                 status = "published" if res.published else "REJECTED"
                 print(f"[WATCH] {ts}  {status:10s}  {res.item.id:30s}  ({res.item.type.value})", flush=True)
@@ -973,8 +1016,10 @@ def build_parser() -> argparse.ArgumentParser:
     doctor_p = sub.add_parser("doctor", help="read-only workspace and capability diagnostics")
     doctor_p.add_argument("--json", action="store_true", help="output as JSON")
     control_p = sub.add_parser("control", help="optional backup and approved-ingest control plane")
-    control_p.add_argument("action", choices=("doctor", "backup", "ingest", "run"), help="control operation")
+    control_p.add_argument("action", choices=("doctor", "backup-preview", "backup", "restore-preview", "restore", "ingest", "run"), help="control operation")
     control_p.add_argument("--dry-run", action="store_true", help="show planned external actions without mutating or uploading")
+    control_p.add_argument("--source", metavar="PATH", help="local backup directory for restore operations")
+    control_p.add_argument("--destination", metavar="PATH", help="new workspace destination for restore")
 
     sub.add_parser("rebuild", help="rebuild the FTS catalog from normalized items")
 
@@ -984,6 +1029,12 @@ def build_parser() -> argparse.ArgumentParser:
     search_p.add_argument("--sort", choices=("relevance", "score", "newest", "oldest"), default="relevance",
                           help="sort order: relevance (default), score (knowledge score), newest, oldest")
     _add_json_flag(search_p)
+
+    retrieval_p = sub.add_parser("retrieval-inspect", help="inspect the shared retrieval trace")
+    retrieval_p.add_argument("query", help="retrieval query")
+    retrieval_p.add_argument("--limit", type=int, default=5, choices=range(1, 21), metavar="N",
+                             help="maximum source chunks")
+    _add_json_flag(retrieval_p)
 
     links_p = sub.add_parser("links", help="show outgoing cross-links for an item")
     links_p.add_argument("item_id", metavar="ITEM_ID", help="item identifier")
@@ -1062,7 +1113,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "doctor":
         return cmd_doctor(json_output=args.json)
     if args.command == "control":
-        return cmd_control(args.action, dry_run=args.dry_run)
+        return cmd_control(args.action, dry_run=args.dry_run, source=args.source, destination=args.destination)
     if args.command == "vault-import":
         return cmd_vault_import(args.path, overwrite=args.overwrite)
     if args.command == "vault-export":
@@ -1075,6 +1126,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_rebuild()
     if args.command == "search":
         return cmd_search(args.query, json_output=args.json, semantic=args.semantic, sort=args.sort)
+    if args.command == "retrieval-inspect":
+        return cmd_retrieval_inspect(args.query, json_output=args.json, limit=args.limit)
     if args.command == "links":
         return cmd_links(args.item_id, json_output=args.json)
     if args.command == "score":

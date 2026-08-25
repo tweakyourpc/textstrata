@@ -24,6 +24,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 from . import __version__
 from .acquisition import AcquisitionService, capabilities, parse_acquisition_multipart
 from .application.acquisition import acquisition_maintenance_settings_payload, acquisition_queue_payload, build_ingest_submission, clear_acquisition_completed, save_acquisition_maintenance_settings
+from .application.control import control_backup, control_backup_preview, control_restore, control_restore_preview, control_status
 from .application.items import rename_item, update_aliases
 from .application.graph import build_graph_payload
 from .application.item_detail import build_item_render_context
@@ -34,7 +35,7 @@ from .application.setup import initialize_workspace, setup_status
 from .captions import export_caption
 from .source_identity import source_identity, youtube_source_kind
 from .catalog import Catalog
-from .ingest import build_item, ingest_text
+from .ingest import _validate_and_publish, build_item, ingest_text
 from .models import VALID_CONTRIBUTORS, append_contributor
 from .gateway import GatewayError, CompatibilityGateway
 from .operations import error_payload, get_settings, record_error
@@ -44,7 +45,6 @@ from .presentation.browser_assets import client_asset_content
 from .presentation import render_item_html, render_library_index, render_media_html, render_new_note_html, render_setup_html, render_text, skin_from_settings
 from .presentation.pages.graph import render_graph_html
 from .store import TextStrataStore
-from .validate import validate
 from .workspace import apply_config_environment, load_cascading_config, resolve_workspace
 from . import classify
 from . import review
@@ -427,6 +427,14 @@ def create_handler(app: TextStrataWebApp):
                 self._json(200, acquisition_maintenance_settings_payload(app.acquisition))
                 return
 
+            if path == "/api/textstrata/control/status":
+                self._json(200, control_status(app.root))
+                return
+
+            if path == "/api/textstrata/control/backup/preview":
+                self._json(200, control_backup_preview(app.root))
+                return
+
             if path == "/api/textstrata/system-info":
                 self._json(200, build_system_info_payload(app))
                 return
@@ -790,6 +798,7 @@ def create_handler(app: TextStrataWebApp):
                 path.endswith("/cancel") or path.endswith("/purge-output") or path.endswith("/empty")
                 or path.endswith("/restart") or path.endswith("/clear-completed") or "/purge" in path
                 or path.endswith("/trash") or path.endswith("/maintenance/settings")
+                or path in {"/api/textstrata/control/backup", "/api/textstrata/control/restore"}
             )
             if destructive and not self._confirmed():
                 self._failure(409, "confirmation-required", "Confirm this operation in the frontend before retrying.")
@@ -806,6 +815,22 @@ def create_handler(app: TextStrataWebApp):
                     return True
                 if path == "/api/acquisition/maintenance/restart":
                     self._json(200, {"rechecked": True, "capabilities": capabilities()})
+                    return True
+                if path == "/api/textstrata/control/backup":
+                    self._json(200, control_backup(app.root))
+                    return True
+                if path == "/api/textstrata/control/restore/preview":
+                    body = self._read_json_body()
+                    self._json(200, control_restore_preview(str(body.get("source") or "")))
+                    return True
+                if path == "/api/textstrata/control/restore":
+                    body = self._read_json_body()
+                    source = Path(str(body.get("source") or "")).expanduser().resolve()
+                    destination = Path(str(body.get("destination") or "")).expanduser().resolve()
+                    if destination == app.root or destination.parent != app.root.parent:
+                        self._failure(400, "operation-failed", "Restore destination must be a new sibling workspace directory.")
+                        return True
+                    self._json(200, control_restore(source, destination))
                     return True
                 if path.startswith("/api/acquisition/queue/"):
                     rest = path.removeprefix("/api/acquisition/queue/").strip("/")
@@ -914,7 +939,7 @@ def create_handler(app: TextStrataWebApp):
                     current_path = app.store.normalized_path_for_id(item_id)
                     existing_item = app.item_by_id(item_id) if current_path is not None else None
                     existing_raw = current_path.read_text(encoding="utf-8") if current_path else ""
-                    if current_path is not None and not raw_text.lstrip().startswith("---"):
+                    if current_path is not None and not raw_text.lstrip().removeprefix("\ufeff").lstrip().startswith("---"):
                         if existing_raw.startswith("---\n") and "\n---\n" in existing_raw[4:]:
                             _front, _sep, _body = existing_raw[4:].partition("\n---\n")
                             raw_text = f"---\n{_front}\n---\n\n{raw_text.strip()}\n"
@@ -939,11 +964,15 @@ def create_handler(app: TextStrataWebApp):
                             chain = existing_item.provenance.contributor_chain
                         item.provenance.contributor_chain = chain
                     item.extra = {**item.extra, "last_edited_at": datetime.now(timezone.utc).isoformat()}
-                    result = validate(item)
-                    app.store.save_original(item.id, raw_text)
-                    if not result.ok:
-                        raise ValueError("; ".join(result.errors) or "Content validation failed.")
-                    app.store.publish_normalized(item)
+                    ingest_result = _validate_and_publish(
+                        app.store,
+                        item,
+                        suggested_tags=suggested,
+                        frontmatter_result=fm,
+                        original_text=raw_text if current_path is None else None,
+                    )
+                    if not ingest_result.validation.ok:
+                        raise ValueError("; ".join(ingest_result.validation.errors) or "Content validation failed.")
                     catalog = Catalog(app.root)
                     try:
                         catalog.index_item(item)

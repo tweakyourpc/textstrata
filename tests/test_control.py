@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from textstrata.control import backup_workspace, load_config, load_effective_config, process_approved_ingest, select_backup_files, verify_backup_manifest
+from textstrata.control import backup_preview, backup_workspace, load_config, load_effective_config, process_approved_ingest, restore_preview, restore_workspace, select_backup_files, verify_backup_manifest
 from textstrata.ingest import ingest_text
 from textstrata.store import TextStrataStore
 
@@ -55,6 +55,28 @@ class ControlPlaneTests(unittest.TestCase):
         path.unlink()
         result = verify_backup_manifest(self.root, manifest)
         self.assertEqual(result["missing"], ["normalized/verify.note.md"])
+
+    def test_backup_preview_is_read_only_and_restore_requires_new_destination(self):
+        ingest_text(self.store, "---\nid: restore.note\ntitle: Restore\ntype: note\n---\nDurable")
+        config = {"backup": {"enabled": True, "target": "local-backup", "roots": ["normalized"], "include_untagged": True}}
+        preview = backup_preview(self.root, config=config)
+        self.assertTrue(preview["read_only"])
+        self.assertEqual(preview["files"], 1)
+        backup_dir = self.root / "backup-source"
+        backup_dir.mkdir()
+        manifest = {"version": 1, "generated_at": "test", "files": preview["manifest"]}
+        (backup_dir / "backup-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        source_file = self.root / preview["manifest"][0]["relative_path"]
+        target_file = backup_dir / preview["manifest"][0]["relative_path"]
+        target_file.parent.mkdir(parents=True, exist_ok=True)
+        target_file.write_bytes(source_file.read_bytes())
+        self.assertTrue(restore_preview(backup_dir)["verification"]["ok"])
+        restored = self.root / "restored-workspace"
+        result = restore_workspace(backup_dir, restored)
+        self.assertTrue(result["verification"]["ok"])
+        self.assertIn("Durable", (restored / preview["manifest"][0]["relative_path"]).read_text(encoding="utf-8"))
+        with self.assertRaises(ValueError):
+            restore_workspace(backup_dir, restored)
 
     def test_approved_ingest_skips_unapproved_and_processed_items(self):
         queue = {"items": [{"id": "approved-1", "status": "approved", "type": "url", "payload": "https://example.test"}, {"id": "pending-1", "status": "pending", "type": "url", "payload": "https://pending.test"}]}

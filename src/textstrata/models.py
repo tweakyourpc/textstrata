@@ -15,9 +15,36 @@ from datetime import datetime, timezone
 from enum import Enum
 
 VALID_CONTRIBUTORS = frozenset({"via_script", "human", "via_ai"})
+_CASE_INSENSITIVE_LIST_FIELDS = frozenset({"tags", "aliases"})
+
+
+def list_value_comparison_key(field_name: str, value: object) -> object:
+    """Return the field-aware key used to compare list members."""
+    normalized = str(value).strip()
+    if field_name in _CASE_INSENSITIVE_LIST_FIELDS:
+        return normalized.casefold()
+    return normalized
 
 def parse_contributor_chain(chain: str) -> list[str]:
     return [c.strip() for c in chain.split(",") if c.strip()]
+
+def normalize_contributor_chain(chain: object) -> str:
+    """Coerce a declared contributor chain to the canonical comma-joined string.
+
+    Frontmatter in the wild carries this as a YAML sequence as well as a
+    string, but the field is typed ``str`` everywhere downstream, including the
+    catalog's TEXT column. Coercing here keeps a sequence from reaching sqlite
+    as a bare list.
+    """
+    if isinstance(chain, str):
+        parts = parse_contributor_chain(chain)
+    elif isinstance(chain, (list, tuple)):
+        parts = [str(c).strip() for c in chain if str(c).strip()]
+    elif chain is None:
+        parts = []
+    else:
+        parts = parse_contributor_chain(str(chain))
+    return ", ".join(parts)
 
 def append_contributor(chain: str, contributor: str) -> str:
     if contributor not in VALID_CONTRIBUTORS:
@@ -159,6 +186,10 @@ class Provenance:
     ai_vendor: str | None = None
     ai_model: str | None = None
     ai_operation: str | None = None
+    _ingested_at_declared: bool = field(default=False, init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        self.contributor_chain = normalize_contributor_chain(self.contributor_chain)
 
     def to_dict(self) -> dict:
         d: dict = {
@@ -218,6 +249,9 @@ class TextStrataItem:
         return len(self.edited_by)
 
     def canonical_frontmatter(self) -> dict:
+        provenance = {k: v for k, v in self.provenance.to_dict().items() if v is not None}
+        if not self.provenance._ingested_at_declared:
+            provenance.pop("ingested_at", None)
         data = {
             "id": self.id,
             "type": self.type.value,
@@ -229,7 +263,7 @@ class TextStrataItem:
             "handling": self.handling.value,
             "preservation": self.preservation.value,
             "retrieval_priority": self.retrieval_priority,
-            "provenance": {k: v for k, v in self.provenance.to_dict().items() if v is not None},
+            "provenance": provenance,
         }
         extra = dict(self.extra)
         if self.edited_by:

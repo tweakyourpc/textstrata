@@ -134,6 +134,21 @@ Status: readiness and recovery contracts implemented; backup and upgrade gate re
 Gate: a disposable workspace can be upgraded, backed up, restored, restarted,
 and smoke-tested by one documented quality command.
 
+## Phase 6: Reliable Capture and Control Plane
+
+Status: first control-plane increment implemented for the 0.6.0 line.
+
+- Backup preview, confirmed backup execution, restore preview, and confirmed
+  restore now share one application boundary across CLI, web, and MCP.
+- Restore verifies the SHA-256 manifest before copying and verifies the new
+  workspace afterward; the active workspace cannot be selected by the web
+  restore route.
+- The Google Drive/rclone transport remains optional and host-managed.
+
+Remaining 0.6.0 work: remote restore staging, durable backup history, richer
+acquisition recovery UI, stable saved searches, relevance fixtures, and the
+remaining LAN trust-boundary controls.
+
 ## Working Rule
 
 Each phase must preserve the published HTTP and item-storage contracts unless a

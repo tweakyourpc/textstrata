@@ -4,7 +4,7 @@ import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from textstrata.gateway import GatewayError, CompatibilityGateway
-from textstrata.ingest import ingest_text
+from textstrata.ingest import build_item, ingest_text
 from textstrata.operations import ARTICLE_ID, ensure_article, get_settings, record_error, save_settings
 from textstrata.store import TextStrataStore
 
@@ -19,8 +19,15 @@ class StoreOperationTests(unittest.TestCase):
         self.store = TextStrataStore(self.root, revision_limit=3)
 
     def test_revision_limit_and_restore(self):
-        for value in ("one", "two", "three", "four", "five"):
-            ingest_text(self.store, note(value))
+        # Task 8: the stored original is write-once, so only the first version
+        # is ingested. Later versions are an update of an existing item and are
+        # published through the normalized path, which is what builds revision
+        # history. This test is about revision history, not about permission to
+        # replace an original.
+        ingest_text(self.store, note("one"))
+        for value in ("two", "three", "four", "five"):
+            item, _, _ = build_item(note(value))
+            self.store.publish_normalized(item)
         revisions = self.store.list_revisions("note.history")
         self.assertEqual(len(revisions), 3)
         self.store.restore_revision("note.history", revisions[-1]["name"])

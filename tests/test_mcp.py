@@ -1,4 +1,5 @@
 import os
+import json
 import tempfile
 import unittest
 
@@ -29,9 +30,17 @@ class MCPTests(unittest.TestCase):
         server = TextStrataMCP(self.tmp)
         tools = server.tools()
         self.assertTrue(any(tool["name"] == "search_knowledge" for tool in tools))
+        self.assertTrue(any(tool["name"] == "inspect_retrieval" for tool in tools))
+        self.assertTrue(any(tool["name"] == "backup_preview" for tool in tools))
+        preview = server.call("backup_preview", {})
+        self.assertIn('"read_only": true', preview["content"][0]["text"])
         result = server.call("search_knowledge", {"query": "MCP", "limit": 20})
         text = result["content"][0]["text"]
         self.assertIn("note.mcp", text)
+        trace = server.call("inspect_retrieval", {"query": "MCP notes"})
+        trace_payload = json.loads(trace["content"][0]["text"])
+        self.assertEqual(trace_payload["strategy"], "keyword")
+        self.assertIn("note.mcp", [candidate["item_id"] for candidate in trace_payload["candidates"]])
         server.close()
 
     def test_render_tool(self):

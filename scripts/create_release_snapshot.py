@@ -8,6 +8,19 @@ import shutil
 from pathlib import Path
 
 ROOTS = ("src", "tests", "docs", "seed", "scripts", "config")
+# Agent-run documents that live under docs/ but are private operating instructions, not
+# product documentation: the agent contract, its ledgers, per-task rulings, blast-radius
+# audits and inter-agent handoffs. Globs rather than fixed names because rulings, ledgers
+# and handoffs accumulate as a run proceeds. scripts/release_audit.py enforces the same
+# families as a backstop; keep the two in step.
+PRIVATE_DOCS = (
+    "AGENT-CONTRACT.md",
+    "ledger*.md",
+    "hardening-ledger*.md",
+    "ruling-*.md",
+    "handoff-*.md",
+    "task*-blast-radius.md",
+)
 FILES = ("pyproject.toml", "README.md", "LICENSE", "Dockerfile", "docker-compose.yml", ".quality-gate", ".dockerignore", ".gitignore")
 
 
@@ -30,6 +43,7 @@ def create(source: Path, destination: Path) -> None:
                     "*.rej",
                     "*~",
                     "textstrata-readme-hero-v*.png",
+                    *PRIVATE_DOCS,
                 ),
             )
     for name in FILES:

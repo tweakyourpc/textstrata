@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import urllib.request
 from dataclasses import dataclass
 from typing import Any
 
 from .catalog import Catalog
 from .ingest import build_item
+from .retrieval import _fts_safe, extract_keywords, retrieve
 from .store import TextStrataStore
 
 
@@ -34,36 +34,6 @@ class ResearchResult:
     sources: list[Source]
     model: str
     query: str
-
-
-def _fts_safe(query: str) -> str:
-    """Strip FTS5 special characters from a query string."""
-    return re.sub(r'[^\w\s-]', ' ', query).strip()
-
-
-def _chunk_text(text: str, max_chars: int = 800, overlap: int = 100) -> list[str]:
-    """Split text into overlapping chunks, preferring paragraph breaks."""
-    if not text:
-        return []
-    if len(text) <= max_chars:
-        return [text]
-    chunks = []
-    paragraphs = re.split(r'\n\n+', text)
-    current = ""
-    for para in paragraphs:
-        if len(current) + len(para) + 2 > max_chars and current:
-            chunks.append(current.strip())
-            current = para
-        else:
-            if current:
-                current += "\n\n" + para
-            else:
-                current = para
-    if current.strip():
-        chunks.append(current.strip())
-    if len(chunks) == 0:
-        return [text[:max_chars]]
-    return chunks
 
 
 def _call_ollama(
@@ -94,39 +64,10 @@ def _call_ollama(
     return result.get("response", "").strip()
 
 
-STOPWORDS = {
-    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
-    "have", "has", "had", "do", "does", "did", "will", "would", "could",
-    "should", "may", "might", "shall", "can", "need", "dare", "ought",
-    "used", "what", "which", "who", "whom", "this", "that", "these",
-    "those", "of", "in", "on", "at", "to", "for", "by", "with", "from",
-    "up", "down", "out", "off", "over", "under", "again", "further",
-    "then", "once", "here", "there", "when", "where", "why", "how",
-    "all", "each", "every", "both", "few", "more", "most", "other",
-    "some", "such", "no", "not", "only", "own", "same", "so", "than",
-    "too", "very", "just", "about", "above", "across", "after",
-    "also", "and", "because", "before", "between", "does", "it",
-    "its", "into", "through", "during", "before", "after", "above",
-    "below", "get", "got", "make", "made", "know", "like", "see",
-    "come", "take", "want", "use", "tell", "ask", "work", "seem",
-    "feel", "try", "leave", "call", "give", "find", "let", "keep",
-    "put", "set", "new", "good", "first", "last", "long", "great",
-    "little", "right", "old", "big", "high", "follow", "show",
-    "need", "mean", "name", "help", "line", "turn", "cause", "much",
-    "many", "well", "back", "even", "still", "way", "thing", "part",
-    "place", "point", "case", "week", "company", "system", "group",
-    "number", "world", "area", "hand", "room", "eye", "face", "side",
-    "end", "head", "fact", "month", "side", "sort", "kind", "type",
-    "does", "doesnt", "dont", "wont", "wont", "cant", "cannot",
-    "wouldnt", "couldnt", "shouldnt", "mightnt", "neednt",
-}
-
-
 def _extract_keywords(query: str) -> str:
-    """Extract meaningful keywords from a natural language query."""
-    safe = _fts_safe(query)
-    terms = [w for w in safe.lower().split() if w not in STOPWORDS and len(w) > 2]
-    return " ".join(terms) if terms else safe
+    """Backward-compatible string form used by the quick ask command."""
+    terms = extract_keywords(query)
+    return " ".join(terms) or _fts_safe(query)
 
 
 def _search_kb(
@@ -136,45 +77,15 @@ def _search_kb(
     limit: int = 5,
     min_chars: int = 100,
 ) -> list[Source]:
-    keywords = _extract_keywords(query)
-    hits = catalog.search(keywords, limit=limit * 2) if keywords else []
-    if not hits:
-        hits = catalog.search(query, limit=limit * 2)
-    sources: list[Source] = []
-    for h in hits[:limit]:
-        path = store.normalized_path_for_id(h.id)
-        if not path:
-            continue
-        try:
-            text = path.read_text(encoding="utf-8")
-            item, _, _ = build_item(text, fallback_id=h.id)
-        except Exception:
-            continue
-        if not item.body or len(item.body.strip()) < min_chars:
-            continue
-        chunks = _chunk_text(item.body)
-        query_terms = set(keywords.lower().split()) if keywords else set()
-        best_chunk = chunks[0]
-        best_score = 0.0
-        for ch in chunks:
-            body_lower = ch.lower()
-            matches = sum(1 for t in query_terms if t in body_lower)
-            score = matches / max(len(query_terms), 1)
-            if score > best_score:
-                best_score = score
-                best_chunk = ch
-        sources.append(Source(
-            item_id=item.id,
-            title=item.title,
-            type=item.type.value,
-            tags=list(item.tags),
-            chunk=best_chunk[:1200],
-            score=best_score,
-        ))
-    if not sources:
-        return sources
-    sources.sort(key=lambda s: -s.score)
-    return sources[:limit]
+    result = retrieve(query, catalog, store, limit=limit, min_body_chars=min_chars)
+    return [Source(
+        item_id=candidate.item_id,
+        title=candidate.title,
+        type=candidate.type,
+        tags=list(candidate.tags),
+        chunk=candidate.chunk,
+        score=candidate.score,
+    ) for candidate in result.candidates]
 
 
 def research(
@@ -186,11 +97,29 @@ def research(
 ) -> ResearchResult:
     """Run the full RAG pipeline: search -> retrieve -> synthesize -> answer."""
     model = model or os.environ.get("TEXTSTRATA_LLM_MODEL") or os.environ.get("FABRIC_LLM_MODEL", "phi3:mini")
-    sources = _search_kb(query, catalog, store, limit=7 if depth == "deep" else 5)
+    retrieval = retrieve(query, catalog, store, limit=7 if depth == "deep" else 5)
+    sources = [Source(
+        item_id=candidate.item_id,
+        title=candidate.title,
+        type=candidate.type,
+        tags=list(candidate.tags),
+        chunk=candidate.chunk,
+        score=candidate.score,
+    ) for candidate in retrieval.candidates]
     if not sources:
         return ResearchResult(
             answer="No relevant content found in the knowledge base.",
             sources=[],
+            model=model,
+            query=query,
+        )
+    if not retrieval.sufficient_evidence:
+        return ResearchResult(
+            answer=(
+                f"Evidence gap: {retrieval.reason}. "
+                "No answer was generated from weakly matched context."
+            ),
+            sources=sources,
             model=model,
             query=query,
         )

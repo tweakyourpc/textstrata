@@ -10,6 +10,16 @@ from pathlib import Path
 
 EXCLUDED_PARTS = {".workspace", "textstrata-store", ".codex", ".worktrees", ".venv", "__pycache__", ".git"}
 PRIVATE_NAMES = {"AGENTS.md", "MASTER_PROMPT.md", "textstrata-server.service"}
+# Agent-run documents under docs/: the contract, its ledgers, per-task rulings, blast-radius
+# audits and inter-agent handoffs. Named families rather than fixed names because rulings,
+# ledgers and handoffs are added as the run proceeds, and a fixed list goes stale silently.
+PRIVATE_NAME_PATTERNS = (
+    re.compile(r"\AAGENT-CONTRACT\.md\Z"),
+    re.compile(r"\A(?:hardening-)?ledger[a-z0-9_.-]*\.md\Z"),
+    re.compile(r"\Aruling-[a-z0-9_.-]+\.md\Z"),
+    re.compile(r"\Ahandoff-[a-z0-9_.-]+\.md\Z"),
+    re.compile(r"\Atask\d+[a-z]?-blast-radius\.md\Z"),
+)
 PRIVATE_PATTERNS = (
     re.compile(r"/home/[A-Za-z0-9_.-]+/"),
     re.compile(r"\b192\.168\.(?:\d{1,3}\.){1}\d{1,3}\b"),
@@ -40,6 +50,9 @@ def audit(root: Path, *, strict_source_only: bool = False) -> list[dict[str, str
             continue
         if path.name in PRIVATE_NAMES:
             findings.append({"path": str(relative), "reason": "machine-specific instruction/deployment file"})
+            continue
+        if any(pattern.match(path.name) for pattern in PRIVATE_NAME_PATTERNS):
+            findings.append({"path": str(relative), "reason": "private agent-run document"})
             continue
         if not path.is_file() or path.stat().st_size > 2 * 1024 * 1024:
             continue

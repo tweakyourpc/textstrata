@@ -7,7 +7,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .models import CONTRADICTORY_POLICY, ContentType, TextStrataItem, is_valid_id
+from .models import (
+    CONTRADICTORY_POLICY,
+    ContentType,
+    TextStrataItem,
+    is_valid_id,
+    list_value_comparison_key,
+)
+
+_PROTECTED_DIAGNOSTIC_KEYS = frozenset(
+    {"id", "type", "title", "handling", "preservation", "dependencies", "related"}
+)
 
 
 @dataclass
@@ -17,9 +27,17 @@ class ValidationResult:
     warnings: list[str] = field(default_factory=list)
 
 
-def validate(item: TextStrataItem) -> ValidationResult:
+def validate(item: TextStrataItem, diagnostics=None) -> ValidationResult:
     errors: list[str] = []
     warnings: list[str] = []
+
+    for diagnostic in diagnostics or ():
+        key = str(diagnostic).partition(":")[0].strip()
+        message = f"front-matter conflict: {diagnostic}"
+        if key in _PROTECTED_DIAGNOSTIC_KEYS:
+            errors.append(message)
+        else:
+            warnings.append(message)
 
     if not item.id:
         errors.append("item has no id")
@@ -41,23 +59,23 @@ def validate(item: TextStrataItem) -> ValidationResult:
             f"preservation={item.preservation.value}"
         )
 
-    def duplicate_values(values: list[str], *, case_sensitive: bool = False) -> list[str]:
-        seen: set[str] = set()
+    def duplicate_values(field_name: str, values: list[str]) -> list[str]:
+        seen: set[object] = set()
         duplicates: list[str] = []
         for value in values:
-            key = value if case_sensitive else value.casefold()
+            key = list_value_comparison_key(field_name, value)
             if key in seen and value not in duplicates:
                 duplicates.append(value)
             seen.add(key)
         return duplicates
 
-    for label, values, case_sensitive in (
-        ("tags", item.tags, False),
-        ("aliases", item.aliases, False),
-        ("related", item.related, True),
-        ("dependencies", item.dependencies, True),
+    for label, values in (
+        ("tags", item.tags),
+        ("aliases", item.aliases),
+        ("related", item.related),
+        ("dependencies", item.dependencies),
     ):
-        duplicates = duplicate_values(values, case_sensitive=case_sensitive)
+        duplicates = duplicate_values(label, values)
         if duplicates:
             errors.append(f"item has duplicate {label}: {', '.join(repr(value) for value in duplicates)}")
 

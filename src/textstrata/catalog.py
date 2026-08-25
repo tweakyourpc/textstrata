@@ -205,6 +205,7 @@ class Catalog:
             item, _suggested, _fm = build_item(
                 path.read_text(encoding="utf-8"), fallback_id=path.stem
             )
+            store.hydrate_item_metadata(item, path)
             self._upsert(item, path.relative_to(self.workspace_root))
             count += 1
         # Prune meta rows for items no longer in the normalized store.

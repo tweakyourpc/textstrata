@@ -19,7 +19,7 @@ from urllib.request import Request, urlopen
 
 import yaml
 
-from .ingest import ingest_text
+from .ingest import _update_text, ingest_text
 from .store import TextStrataStore
 
 
@@ -138,7 +138,10 @@ class CompatibilityGateway:
                 "upstream_date_ingested": meta.get("date_ingested"),
             }
             raw = "---\n" + yaml.safe_dump(front, sort_keys=False, allow_unicode=True).strip() + "\n---\n\n" + markdown
-            result = ingest_text(store, raw, fallback_id=item_id)
+            if store.normalized_path_for_id(item_id) is None:
+                result = ingest_text(store, raw, fallback_id=item_id)
+            else:
+                result = _update_text(store, raw, fallback_id=item_id)
             if result.published:
                 imported += 1
         removed = 0

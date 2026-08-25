@@ -48,9 +48,12 @@ class FrontmatterTests(unittest.TestCase):
         text = "---\nid: first\n---\n---\nid: second\n---\nbody\n"
         fm = frontmatter.parse(text)
         self.assertEqual(fm.data["id"], "first")
-        self.assertEqual(len(fm.conflicts), 1)
-        self.assertIn("first", fm.conflicts[0])
-        self.assertIn("second", fm.conflicts[0])
+        # Contract §4 pins this message; see tests/test_frontmatter_merge_types.py
+        # for the shared helper that builds it.
+        self.assertEqual(
+            fm.conflicts,
+            ["id: kept 'first' from block 1, rejected 'second' in block 2"],
+        )
 
     def test_no_frontmatter(self):
         fm = frontmatter.parse("# just a heading\n\ntext\n")
@@ -72,6 +75,58 @@ class FrontmatterTests(unittest.TestCase):
         self.assertEqual(fm.data["title"], "Project: Subtitle")
         self.assertIsNone(fm.data["empty"])
         self.assertEqual(fm.data["description"], "first line continued line")
+
+
+
+class LeadingBlockToleratesAByteOrderMarkTests(unittest.TestCase):
+    """A leading BOM must not stop the first block being recognised.
+
+    This is a load-bearing dependency that was undeclared until now. The web
+    item-save route sends BOM-prefixed documents down the whole-document branch
+    and passes the text to ``build_item`` with the BOM still attached; nothing
+    strips it first. It works only because ``_LEADING_BLOCK_RE`` carries an
+    optional BOM in its prefix.
+
+    If that tolerance is removed, the first key parses mangled, the id
+    slugifies to something else, and a web save creates a sibling item instead
+    of overwriting its target. The web tests in
+    tests/test_original_bytes.py::WebSaveOriginalBytesTests catch that, but only
+    through their identity assertions, and only for one route. The property
+    belongs here, next to the parser that provides it.
+    """
+
+    BOM = "﻿"
+    DOCUMENT = "---\nid: note.bom\ntitle: BOM\ntype: note\ntags: [x]\n---\n\nbody text\n"
+
+    def test_a_leading_bom_still_yields_one_block(self):
+        fm = frontmatter.parse(self.BOM + self.DOCUMENT)
+        self.assertEqual(fm.block_count, 1)
+
+    def test_a_leading_bom_does_not_corrupt_the_first_key(self):
+        fm = frontmatter.parse(self.BOM + self.DOCUMENT)
+        self.assertEqual(fm.data["id"], "note.bom")
+        self.assertNotIn("﻿", "".join(str(key) for key in fm.data))
+
+    def test_a_bom_prefixed_document_parses_identically_to_one_without(self):
+        with_bom = frontmatter.parse(self.BOM + self.DOCUMENT)
+        without = frontmatter.parse(self.DOCUMENT)
+        self.assertEqual(with_bom.data, without.data)
+        self.assertEqual(with_bom.body, without.body)
+        self.assertEqual(with_bom.block_count, without.block_count)
+
+    def test_a_bom_prefixed_document_is_not_rejected_as_prose(self):
+        fm = frontmatter.parse(self.BOM + self.DOCUMENT)
+        self.assertEqual(fm.warnings, [])
+
+    def test_a_bom_before_stacked_blocks_still_merges_both(self):
+        stacked = (
+            "---\ncreated_via: textstrata-mcp\n---\n"
+            "---\nid: note.bom\ntitle: BOM\ntype: note\n---\n\nbody\n"
+        )
+        fm = frontmatter.parse(self.BOM + stacked)
+        self.assertEqual(fm.block_count, 2)
+        self.assertEqual(fm.data["created_via"], "textstrata-mcp")
+        self.assertEqual(fm.data["id"], "note.bom")
 
 
 if __name__ == "__main__":

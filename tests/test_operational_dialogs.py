@@ -1,12 +1,15 @@
 import json
+import shutil
 import re
 import tempfile
 import unittest
 import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
+from pathlib import Path
 from threading import Thread
 
+from textstrata.control import select_backup_files
 from textstrata.ingest import ingest_text
 from textstrata.presentation import PAPER_SKIN, render_library_index
 from textstrata.presentation.browser_assets import client_asset_content
@@ -112,6 +115,34 @@ class OperationalRouteTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(body["retained_originals_purge_mode"], "never")
         self.assertEqual(body["retained_originals_days"], 45)
+
+    def test_control_preview_is_read_only_and_backup_requires_confirmation(self):
+        status, body = self.request("GET", "/api/textstrata/control/status")
+        self.assertEqual(status, 200)
+        self.assertIn("workspace", body)
+        status, body = self.request("GET", "/api/textstrata/control/backup/preview")
+        self.assertEqual(status, 200)
+        self.assertTrue(body["read_only"])
+        status, body = self.request("POST", "/api/textstrata/control/backup", {})
+        self.assertEqual(status, 409)
+        self.assertEqual(body["code"], "confirmation-required")
+
+    def test_restore_preview_and_restore_verify_manifest_through_http(self):
+        ingest_text(self.app.store, NOTE)
+        entries = select_backup_files(self.app.root, {"backup": {"roots": ["normalized"], "include_untagged": True}})
+        backup_root = Path(self.root) / "http-backup"
+        backup_root.mkdir()
+        shutil.copytree(Path(self.root) / "normalized", backup_root / "normalized")
+        (backup_root / "backup-manifest.json").write_text(json.dumps({"version": 1, "generated_at": "test", "files": [entry.__dict__ for entry in entries]}), encoding="utf-8")
+        status, body = self.request("POST", "/api/textstrata/control/restore/preview", {"source": str(backup_root)})
+        self.assertEqual(status, 200)
+        self.assertTrue(body["verification"]["ok"])
+        destination = Path(self.root).parent / f"http-restored-{Path(self.root).name}"
+        status, body = self.request("POST", "/api/textstrata/control/restore", {"source": str(backup_root), "destination": str(destination)})
+        self.assertEqual(status, 409)
+        status, body = self.request("POST", "/api/textstrata/control/restore", {"source": str(backup_root), "destination": str(destination)}, confirm=True)
+        self.assertEqual(status, 200)
+        self.assertTrue(body["verification"]["ok"])
 
     def test_trash_can_be_listed_and_restored_through_http(self):
         ingest_text(self.app.store, NOTE)

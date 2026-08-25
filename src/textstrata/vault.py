@@ -11,7 +11,7 @@ from typing import Any
 from .acquisition import AssetStore
 from .catalog import Catalog
 from .frontmatter import parse, render
-from .ingest import ingest_text
+from .ingest import _update_text, ingest_text
 from .models import is_valid_id
 from .store import TextStrataStore
 
@@ -130,7 +130,8 @@ def import_obsidian_vault(store: TextStrataStore, vault_path: str | Path, *, ove
     catalog = Catalog(store.root)
     try:
         for entry in entries:
-            if store.normalized_path_for_id(entry.item_id) is not None and not overwrite:
+            existing_path = store.normalized_path_for_id(entry.item_id)
+            if existing_path is not None and not overwrite:
                 skipped += 1
                 continue
             raw = entry.path.read_text(encoding="utf-8", errors="replace")
@@ -138,7 +139,11 @@ def import_obsidian_vault(store: TextStrataStore, vault_path: str | Path, *, ove
             data = dict(parsed.data)
             data.update({"id": entry.item_id, "title": entry.title, "aliases": list(entry.aliases), "obsidian_path": entry.relative, "source_kind": "obsidian-vault"})
             body = _rewrite_embeds(_rewrite_wikilinks(parsed.body, mapping), attachments)
-            result = ingest_text(store, render(data, body), fallback_id=entry.item_id)
+            rendered = render(data, body)
+            if existing_path is None:
+                result = ingest_text(store, rendered, fallback_id=entry.item_id)
+            else:
+                result = _update_text(store, rendered, fallback_id=entry.item_id)
             if not result.published:
                 errors.append({"path": entry.relative, "error": "; ".join(result.validation.errors)})
                 continue

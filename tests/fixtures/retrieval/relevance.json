@@ -1,0 +1,8 @@
+{
+  "queries": [
+    {"query": "backup manifest", "relevant": ["ops.backup"]},
+    {"query": "restore manifest", "relevant": ["ops.restore"]},
+    {"query": "browser keyboard navigation", "relevant": ["ui.navigation"]},
+    {"query": "local model inference", "relevant": ["ai.local-models"]}
+  ]
+}

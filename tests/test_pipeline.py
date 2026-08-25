@@ -55,9 +55,10 @@ class IngestPipelineTests(unittest.TestCase):
         # Provenance block survived too.
         self.assertEqual(item.provenance.created_via, "textstrata-mcp")
         self.assertEqual(item.provenance.authorship, "Codex")
-        # Unreserved keys land in extra, not lost.
-        self.assertIsNone(item.extra.get("project"))
-        self.assertEqual(item.extra.get("version"), "1.0.0")
+        # Unreserved keys land in extra, not lost; reserved keys do not leak into it.
+        self.assertEqual(item.extra, {"version": "1.0.0", "updated": "2026-07-03"})
+        self.assertNotIn("title", item.extra)
+        self.assertNotIn("tags", item.extra)
 
     def test_original_preserved_separately_from_normalized(self):
         raw = SEED.read_text(encoding="utf-8")
