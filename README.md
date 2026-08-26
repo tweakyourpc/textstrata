@@ -25,6 +25,7 @@ This repository is the **substrate** and the standalone runtime. It stores norma
 | `mcp_server.py` | Dependency-free MCP-style stdio server exposing search, preview, ingest, and render tools. |
 | `gateway.py` | Optional allowlisted gateway for importing from an external acquisition service. |
 | `operations.py` | Revision settings and the stable self-updating operations/error reference article. |
+| `commands/` | Self-contained CLI command implementations, starting with the classification-feedback report behind `show-misclassifications`. |
 
 ## Ingestion pipeline
 
@@ -94,6 +95,7 @@ python -m textstrata search "policy driven ingestion"
 python -m textstrata links ITEM_ID
 python -m textstrata score               # ranked knowledge scores (0-100)
 python -m textstrata score --clusters    # emergent topic clusters
+python -m textstrata show-misclassifications  # where approved policy overrode the suggestion
 python -m textstrata mcp
 
 # Run the web surface on any available local port.

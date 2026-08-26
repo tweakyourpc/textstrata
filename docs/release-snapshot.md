@@ -2,7 +2,7 @@
 
 Create a disposable private-GitHub source snapshot containing `src/`, `tests/`, `docs/`, generic `seed/`, generic `scripts/`, `pyproject.toml`, `README.md`, Docker files, and quality configuration. Exclude workspaces, corpora, private instructions, machine service files, personal paths/IPs, caches, virtual environments, media, and model data.
 
-For the 0.5.6 hardening release, run the repository quality gate and
+For the 0.5.7 release, run the repository quality gate and
 `python scripts/release_audit.py --root SNAPSHOT --strict-source-only` before
 packaging. The audit must report `release audit: clean`, and the quality gate
 must report `phase5 backup/restore/upgrade smoke: ok`. The source snapshot

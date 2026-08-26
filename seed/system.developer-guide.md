@@ -40,8 +40,9 @@ src/textstrata/
   acquisition.py   — File/URL/YouTube acquisition
   gateway.py       — Optional external acquisition gateway
   web.py           — Web shell (Flask-based)
+  commands/        — Self-contained CLI command implementations
 seed/               — Seed items auto-ingested into fresh stores
-tests/              — pytest test suite (108+ tests)
+tests/              — test suite (587 tests, run under unittest by the quality gate)
 ```
 
 ## How to Add a New MCP Tool

@@ -65,6 +65,9 @@ python3 -m textstrata analyze
 # View the activity log:
 python3 -m textstrata log
 
+# Show items whose approved policy or tags disagree with what ingest suggested:
+python3 -m textstrata show-misclassifications
+
 # Start the web shell:
 python3 -m textstrata web
 ```

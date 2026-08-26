@@ -2,8 +2,8 @@
 id: system.changelog
 title: TextStrata Release Notes
 type: reference
-version: 0.5.6
-updated: 2026-08-25
+version: 0.5.7
+updated: 2026-08-26
 tags: [system, release-notes, version]
 handling: human_plus_ai
 preservation: rewrite_allowed
@@ -46,3 +46,11 @@ For installation and capability requirements, see the repository README and
 - Frontmatter recovery and merging are type-aware, and malformed provenance values are normalized instead of rejected.
 - A server no longer fails to start because one item carries a malformed `contributor_chain`; the value is normalized and the item is indexed.
 - Existing HTTP, CLI, MCP, Markdown, and filesystem contracts remain unchanged.
+
+## 0.5.7
+
+- Ingestion now records the policy and tags it suggested for an item, stored beside the item under `extra.edited_by`, so suggestions can be compared against what was actually approved.
+- New `show-misclassifications` command reports items whose declared policy or tags disagree with the suggestion, making a consistently wrong classification rule visible instead of invisible.
+- Suggestions that were simply never adopted are counted rather than listed, and only a suggested tag missing from the final list counts as rejected, so the report does not flag routine authoring as an override.
+- Items published before this release carry no suggestion record and are not reported; nothing needs migrating.
+- Normalized output remains a pure function of the input bytes, and existing HTTP, CLI, MCP, Markdown, and filesystem contracts remain unchanged.
