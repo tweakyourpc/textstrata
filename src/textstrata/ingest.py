@@ -21,6 +21,8 @@ from pathlib import Path
 from . import activity, classify, frontmatter
 from .models import (
     ContentType,
+    EditRecord,
+    Origin,
     TextStrataItem,
     HandlingMode,
     PreservationMode,
@@ -166,6 +168,39 @@ def _ingest(
     return ingest_result
 
 
+CLASSIFICATION_NOTE = "automatic classification at ingest"
+
+
+def _record_classification(item: TextStrataItem, suggested_tags: list[str]) -> None:
+    """Record what classification suggested, next to what the item actually carries.
+
+    Deliberately carries no timestamp. ``EditRecord.timestamp`` defaults to the wall
+    clock and ``canonical_frontmatter`` serializes ``edited_by`` into ``extra``, so a
+    generated timestamp would leak into the published Markdown and identical input
+    would normalize to different bytes -- the exact leak
+    ``tests/test_determinism.py`` was written to close, and the same reason
+    ``Provenance`` only emits a *declared* ``ingested_at``.
+
+    Any earlier classification record is replaced rather than appended to, so
+    repeatedly updating one item does not accumulate a copy per publish. Edit records
+    from any other source are preserved.
+    """
+    preserved = [
+        EditRecord.from_dict(entry)
+        for entry in item.extra.get("edited_by") or []
+        if isinstance(entry, dict) and entry.get("description") != CLASSIFICATION_NOTE
+    ]
+    item.edited_by = preserved + [
+        EditRecord(
+            origin=Origin.VIA_SCRIPT,
+            timestamp="",
+            suggested_policy=classify.suggest_policy(item.type, item.title, item.body),
+            suggested_tags=list(suggested_tags),
+            description=CLASSIFICATION_NOTE,
+        )
+    ]
+
+
 def _validate_and_publish(
     store: TextStrataStore,
     item: TextStrataItem,
@@ -183,6 +218,7 @@ def _validate_and_publish(
         with store.item_lock(item.id):
             if original_text is not None:
                 original_path = store.save_original(item.id, original_text)
+            _record_classification(item, suggested_tags)
             normalized_path = store._publish_normalized_unlocked(item)
             published = True
 

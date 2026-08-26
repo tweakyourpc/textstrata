@@ -13,6 +13,10 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # classify imports this module, so the runtime import would cycle.
+    from .classify import PolicySuggestion
 
 VALID_CONTRIBUTORS = frozenset({"via_script", "human", "via_ai"})
 _CASE_INSENSITIVE_LIST_FIELDS = frozenset({"tags", "aliases"})
@@ -45,6 +49,23 @@ def normalize_contributor_chain(chain: object) -> str:
     else:
         parts = parse_contributor_chain(str(chain))
     return ", ".join(parts)
+
+def _as_suggested_tags(value: object) -> list[str]:
+    """Coerce a declared suggested-tag value to a list of strings.
+
+    Frontmatter carries a single tag as a bare scalar and several as a sequence, and
+    this list is read straight back out of ``extra``. Coercing here keeps a scalar from
+    being iterated character by character.
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value.strip()] if value.strip() else []
+    if isinstance(value, (list, tuple)):
+        return [str(v).strip() for v in value if str(v).strip()]
+    text = str(value).strip()
+    return [text] if text else []
+
 
 def append_contributor(chain: str, contributor: str) -> str:
     if contributor not in VALID_CONTRIBUTORS:
@@ -127,6 +148,9 @@ class Origin(str, Enum):
     AI = "ai"
     COMBINED = "combined"
     SUMMARIZED = "summarized"
+    # Deterministic rule-driven work, not a model and not a person. Matches the
+    # "via_script" vocabulary already used by VALID_CONTRIBUTORS.
+    VIA_SCRIPT = "via_script"
     UNKNOWN = "unknown"
 
     @classmethod
@@ -148,22 +172,49 @@ class EditRecord:
     timestamp: str = field(default_factory=_utcnow)
     drift: float = 0.0
     description: str = ""
+    # What classification suggested, kept alongside what was actually approved so the
+    # two can be compared later. Absent on records that predate the fields.
+    suggested_policy: "PolicySuggestion | None" = None
+    suggested_tags: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
-        return {
+        d: dict = {
             "origin": self.origin.value,
             "timestamp": self.timestamp,
             "drift": self.drift,
             "description": self.description,
         }
+        # Emitted only when set, so records without suggestions serialize exactly as
+        # before and already-published items keep their current bytes.
+        if self.suggested_policy is not None:
+            d["suggested_policy"] = {
+                "handling": self.suggested_policy.handling.value,
+                "preservation": self.suggested_policy.preservation.value,
+                "rationale": self.suggested_policy.rationale,
+            }
+        if self.suggested_tags:
+            d["suggested_tags"] = list(self.suggested_tags)
+        return d
 
     @classmethod
     def from_dict(cls, data: dict) -> "EditRecord":
+        from .classify import PolicySuggestion  # local: classify imports this module
+
+        policy = data.get("suggested_policy")
+        suggested_policy = None
+        if isinstance(policy, dict):
+            suggested_policy = PolicySuggestion(
+                handling=HandlingMode.coerce(policy.get("handling")),
+                preservation=PreservationMode.coerce(policy.get("preservation")),
+                rationale=str(policy.get("rationale") or ""),
+            )
         return cls(
             origin=Origin.coerce(data.get("origin")),
             timestamp=data.get("timestamp", _utcnow()),
             drift=float(data.get("drift", 0.0)),
             description=str(data.get("description", "")),
+            suggested_policy=suggested_policy,
+            suggested_tags=_as_suggested_tags(data.get("suggested_tags")),
         )
 
 

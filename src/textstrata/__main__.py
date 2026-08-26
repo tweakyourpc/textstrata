@@ -753,6 +753,15 @@ def cmd_docker(action: str, context: str | None = None) -> int:
     return 2
 
 
+def cmd_show_misclassifications(workspace_root: Path) -> int:
+    """Report items whose approved policy or tags disagree with what ingest suggested."""
+    from .commands.misclassifications import format_report, scan
+
+    outcome = scan(workspace_root)
+    print(format_report(outcome.mismatches, outcome), end="")
+    return 0
+
+
 def cmd_migrate(dry_run: bool = False) -> int:
     """Backfill contributor_chain on items that predate the provenance field."""
     store = TextStrataStore(_root())
@@ -1088,6 +1097,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     migrate_p = sub.add_parser("migrate", help="backfill contributor_chain for pre-chain items")
     migrate_p.add_argument("--dry-run", action="store_true", help="show what would change without writing")
+    sub.add_parser(
+        "show-misclassifications",
+        help="report items whose approved policy or tags disagree with what ingest suggested",
+    )
     sub.add_parser("mcp", help="run the stdio MCP server")
     sub.add_parser("web", help="run the local HTTP presentation server")
     restart_p = sub.add_parser("restart", help="restart the web server")
@@ -1156,6 +1169,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_watch(args.directories)
     if args.command == "migrate":
         return cmd_migrate(dry_run=getattr(args, "dry_run", False))
+    if args.command == "show-misclassifications":
+        return cmd_show_misclassifications(workspace_root)
     if args.command == "mcp":
         return cmd_mcp()
     if args.command == "web":
