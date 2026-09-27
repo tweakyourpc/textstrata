@@ -3,11 +3,16 @@ from __future__ import annotations
 import re
 import tempfile
 import unittest
+import io
+import os
+from contextlib import redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
+from textstrata.__main__ import cmd_restart, main
 from textstrata.application.setup import initialize_workspace, setup_status
 from textstrata.presentation import PAPER_SKIN, render_setup_html
-from textstrata.workspace import resolve_workspace
+from textstrata.workspace import load_installation_config, resolve_workspace
 
 
 class SetupUseCaseTests(unittest.TestCase):
@@ -46,6 +51,48 @@ class SetupUseCaseTests(unittest.TestCase):
         self.assertIn("/api/textstrata/setup/initialize", html)
         ids = re.findall(r'id="([^"]+)"', html)
         self.assertEqual(len(ids), len(set(ids)))
+
+    def test_cli_setup_and_config_check_use_selected_config_file(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {}, clear=True):
+            root = Path(tmp)
+            config = root / "settings" / "installation.json"
+            workspace = root / "vault"
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(main(["--config", str(config), "setup", "--non-interactive", "--storage", str(workspace), "--port", "7543"]), 0)
+                self.assertEqual(main(["--config", str(config), "config", "check"]), 0)
+            self.assertEqual(load_installation_config(path=config)["workspace"], str(workspace))
+            self.assertTrue((workspace / "normalized").is_dir())
+
+    def test_cli_setup_rejects_lan_without_writing(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {}, clear=True):
+            root = Path(tmp)
+            config = root / "installation.json"
+            with self.assertRaises(ValueError):
+                main(["--config", str(config), "setup", "--non-interactive", "--storage", str(root / "vault"), "--host", "0.0.0.0"])
+            self.assertFalse(config.exists())
+            self.assertFalse((root / "vault").exists())
+
+    def test_cli_setup_repairs_invalid_config_only_with_explicit_storage(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {}, clear=True):
+            root = Path(tmp)
+            config = root / "installation.json"
+            config.write_text("not JSON", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "pass --storage"):
+                main(["--config", str(config), "setup", "--non-interactive"])
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(main(["--config", str(config), "setup", "--non-interactive", "--storage", str(root / "vault")]), 0)
+            self.assertEqual(load_installation_config(path=config)["workspace"], str(root / "vault"))
+
+    def test_restart_rejects_unsafe_overrides_before_touching_server(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pid_path = root / ".fabric" / "server.pid"
+            pid_path.parent.mkdir()
+            pid_path.write_text("12345", encoding="utf-8")
+            for host, port in (("0.0.0.0", 8765), ("127.0.0.1", 0)):
+                with self.subTest(host=host, port=port), self.assertRaises(ValueError):
+                    cmd_restart({"mode": "local", "host": host, "port": port}, root, root / "state")
+            self.assertEqual(pid_path.read_text(encoding="utf-8"), "12345")
 
 
 if __name__ == "__main__":

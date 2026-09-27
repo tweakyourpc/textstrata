@@ -6,6 +6,7 @@ small and stdlib-only so it can run on a dev box without extra runtime baggage.
 
 from __future__ import annotations
 
+import hmac
 import json
 import os
 import platform as _platform
@@ -45,7 +46,16 @@ from .presentation.browser_assets import client_asset_content
 from .presentation import render_item_html, render_library_index, render_media_html, render_new_note_html, render_setup_html, render_text, skin_from_settings
 from .presentation.pages.graph import render_graph_html
 from .store import TextStrataStore
-from .workspace import apply_config_environment, load_cascading_config, resolve_workspace
+from .auth import AuthError, BusyError, ThrottledError
+from .web_auth import (
+    MAX_FORM_BYTES, SAFE_METHODS, WebSecurity, asset_response_headers, build_security, inject_head, invite_closed_page,
+    invite_page, invite_token, is_admin_path, is_public_path, local_host_header_allowed, login_page, logout_page,
+    parse_form, proxy_ingress_allowed, safe_next, session_bootstrap, tls_context,
+)
+from .workspace import (
+    apply_config_environment, effective_network, installation_state_dir, is_loopback_host, load_cascading_config,
+    load_installation_config, resolve_workspace,
+)
 from . import classify
 from . import review
 
@@ -94,6 +104,8 @@ class TextStrataWebApp:
         # Set when a graceful restart has been requested via the web UI.
         self._restart_requested = threading.Event()
         self._server = None  # set by serve()
+        # None serves the personal loopback mode without accounts.
+        self.security: WebSecurity | None = None
         self.gateway = CompatibilityGateway() if os.environ.get("FABRIC_ENABLE_PARITY", "").lower() in {"1", "true", "yes", "on"} else None
         self._sync_lock = threading.Lock()
         # One-time startup rescan so the disposable catalog reflects disk
@@ -245,6 +257,32 @@ class TextStrataWebApp:
 def create_handler(app: TextStrataWebApp):
     class Handler(BaseHTTPRequestHandler):
         server_version = f"TextStrata/{__version__}"
+        # Drop idle or stalled connections instead of pinning a worker thread.
+        timeout = 60
+        session = None
+
+        def send_header(self, keyword: str, value: str) -> None:
+            if not hasattr(self, "_header_names"):
+                self._header_names = set()
+            self._header_names.add(keyword.lower())
+            super().send_header(keyword, value)
+
+        def end_headers(self) -> None:
+            names = getattr(self, "_header_names", set())
+            defaults = [
+                ("X-Content-Type-Options", "nosniff"),
+                ("X-Frame-Options", "DENY"),
+                ("Referrer-Policy", "same-origin"),
+            ]
+            if app.security is not None:
+                defaults += [("Cache-Control", "private, no-store"), ("Vary", "Cookie")]
+                if app.security.mode == "https":
+                    defaults.append(("Strict-Transport-Security", "max-age=31536000"))
+            for name, value in defaults:
+                if name.lower() not in names:
+                    super().send_header(name, value)
+            self._header_names = set()
+            super().end_headers()
 
         def log_message(self, fmt: str, *args) -> None:  # quiet by default
             return
@@ -260,7 +298,198 @@ def create_handler(app: TextStrataWebApp):
             self._send(status, "application/json; charset=utf-8", json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"))
 
         def _html(self, status: int, body: str) -> None:
+            if self.session is not None:
+                body = inject_head(body, session_bootstrap(self.session.csrf_token, self.session.user.username))
             self._send(status, "text/html; charset=utf-8", body.encode("utf-8"))
+
+        def _page(self, status: int, body: str) -> None:
+            self._send(status, "text/html; charset=utf-8", body.encode("utf-8"))
+
+        def _redirect(self, location: str, cookie: str | None = None) -> None:
+            self.send_response(303)
+            self.send_header("Location", location)
+            if cookie:
+                self.send_header("Set-Cookie", cookie)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def _client_address(self) -> str:
+            peer = self.client_address[0]
+            return app.security.client_address(peer, self.headers.get("X-Forwarded-For")) if app.security else peer
+
+        def _admit(self, method: str) -> bool:
+            """Authenticate and authorize before any route runs. False means a response was sent."""
+            self.session = None
+            security = app.security
+            path = _canonical_path(urlparse(self.path).path.rstrip("/") or "/")
+            if security is None:
+                if not local_host_header_allowed(self.headers.get("Host")):
+                    self._json(421, error_payload("host-not-allowed", "This local server only answers loopback host names."))
+                    return False
+                return True
+            peer = self.client_address[0]
+            if path == "/healthz" and method == "GET" and (is_loopback_host(peer) or security.is_trusted_proxy(peer)):
+                return True
+            if not proxy_ingress_allowed(security, peer, self.headers.get("X-Forwarded-Proto")):
+                self._json(421, error_payload("proxy-required", "Connect through the configured HTTPS reverse proxy."))
+                return False
+            if is_public_path(path):
+                self._auth_route(method, path)
+                return False
+            session = security.identity.resolve_session(security.session_token(self.headers.get("Cookie")))
+            if session is None:
+                if method == "GET" and not path.startswith(("/api/", "/static/", "/asset/")):
+                    self._redirect("/login?next=" + quote(safe_next(self.path), safe=""))
+                else:
+                    self._json(401, error_payload("authentication-required", "Sign in to continue."))
+                return False
+            if method not in SAFE_METHODS:
+                if not security.origin_allowed(self.headers.get("Origin"), self.headers.get("Host")):
+                    self._json(403, error_payload("cross-origin-denied", "Cross-origin writes are not allowed."))
+                    return False
+                if not hmac.compare_digest(self.headers.get("X-CSRF-Token", "").encode(), session.csrf_token.encode()):
+                    self._json(403, error_payload("csrf-invalid", "Missing or invalid CSRF token. Reload the page and retry."))
+                    return False
+            if is_admin_path(path, method) and not session.user.is_admin:
+                self._json(403, error_payload("admin-required", "This action requires an installation administrator."))
+                return False
+            self.session = session
+            return True
+
+        def _auth_route(self, method: str, path: str) -> None:
+            security = app.security
+            assert security is not None
+            token = security.session_token(self.headers.get("Cookie"))
+            current = security.identity.resolve_session(token)
+            query = parse_qs(urlparse(self.path).query)
+            form: dict[str, str] = {}
+            if method not in {"GET", "POST"}:
+                self._json(405, error_payload("method-not-allowed", "Unsupported method."))
+                return
+            if method == "POST":
+                if not security.origin_allowed(self.headers.get("Origin"), self.headers.get("Host")):
+                    self._json(403, error_payload("cross-origin-denied", "Cross-origin form posts are not allowed."))
+                    return
+                try:
+                    form = parse_form(self._read_raw(MAX_FORM_BYTES))
+                except (ValueError, OverflowError):
+                    self._json(400, error_payload("form-invalid", "Invalid form submission."))
+                    return
+            if path == "/login":
+                self._login(method, query, form, token, current)
+            elif path == "/logout":
+                self._logout(method, form, token, current)
+            else:
+                self._accept_invitation(method, invite_token(path) or "", form, token, current)
+
+        def _start_session(self, user, old_token: str, current, location: str) -> None:
+            security = app.security
+            new_token, _ = security.identity.create_session(user)
+            if current is not None:
+                security.identity.revoke_session(old_token)
+            self._redirect(location, security.session_cookie(new_token))
+
+        def _retry_page(self, status: int, retry_after: int, body: str) -> None:
+            encoded = body.encode("utf-8")
+            self.send_response(status)
+            self.send_header("Retry-After", str(retry_after))
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
+        def _login(self, method: str, query, form: dict[str, str], token: str, current) -> None:
+            security = app.security
+            if method == "GET":
+                requested = (query.get("next") or ["/"])[0]
+                if current is not None:
+                    self._redirect(safe_next(requested))
+                else:
+                    self._page(200, login_page(requested))
+                return
+            next_path = safe_next(form.get("next"))
+            username = form.get("username", "")
+            try:
+                user = security.identity.authenticate(username, form.get("password", ""), address=self._client_address())
+                self._start_session(user, token, current, next_path)
+            except ThrottledError as exc:
+                self._retry_page(429, exc.retry_after, login_page(next_path, str(exc), username))
+            except BusyError as exc:
+                self._retry_page(503, exc.retry_after, login_page(next_path, str(exc), username))
+            except AuthError as exc:
+                self._page(401, login_page(next_path, str(exc), username))
+
+        def _logout(self, method: str, form: dict[str, str], token: str, current) -> None:
+            security = app.security
+            if method == "GET":
+                self._page(200, logout_page(current.csrf_token if current else None))
+                return
+            if current is None:
+                self._redirect("/login", security.clear_cookie())
+                return
+            supplied = form.get("csrf_token") or self.headers.get("X-CSRF-Token", "")
+            if not hmac.compare_digest(supplied.encode(), current.csrf_token.encode()):
+                self._json(403, error_payload("csrf-invalid", "Missing or invalid CSRF token. Reload the page and retry."))
+                return
+            security.identity.revoke_session(token)
+            self._redirect("/login", security.clear_cookie())
+
+        def _accept_invitation(self, method: str, code: str, form: dict[str, str], token: str, current) -> None:
+            security = app.security
+            if not security.identity.invite_is_open(code):
+                self._page(410, invite_closed_page())
+                return
+            if method == "GET":
+                self._page(200, invite_page(code))
+                return
+            username = form.get("username", "")
+            if form.get("password", "") != form.get("confirm", ""):
+                self._page(400, invite_page(code, "The passwords do not match.", username))
+                return
+            try:
+                user = security.identity.accept_invite(code, username, form.get("password", ""))
+            except BusyError as exc:
+                self._retry_page(503, exc.retry_after, invite_page(code, str(exc), username))
+                return
+            except AuthError as exc:
+                self._page(400, invite_page(code, str(exc), username))
+                return
+            self._start_session(user, token, current, "/")
+
+        def _create_invite(self) -> None:
+            security = app.security
+            if security is None or self.session is None:
+                self._failure(404, "operation-failed", "Accounts are not enabled for this installation.")
+                return
+            try:
+                body = self._read_json_body()
+                hours = body.get("ttl_hours", 72)
+                if isinstance(hours, bool) or not isinstance(hours, int):
+                    raise ValueError("ttl_hours must be an integer")
+                code = security.identity.create_invite(
+                    created_by=self.session.user.id, is_admin=body.get("admin") is True,
+                    note=str(body.get("note", "")), ttl_seconds=hours * 3600,
+                )
+            except (ValueError, OverflowError) as exc:
+                self._failure(400, "invite-invalid", str(exc))
+                return
+            except AuthError as exc:
+                self._failure(400, exc.code, str(exc))
+                return
+            base = security.public_url or f"{'https' if security.mode == 'https' else 'http'}://{self.headers.get('Host', '')}"
+            self._json(201, {"path": f"/invite/{code}", "url": f"{base}/invite/{code}", "expires_hours": hours})
+
+        def do_GET(self) -> None:
+            if self._admit("GET"):
+                self._route_get()
+
+        def do_POST(self) -> None:
+            if self._admit("POST"):
+                self._route_post()
+
+        def do_DELETE(self) -> None:
+            if self._admit("DELETE"):
+                self._route_delete()
 
         def _failure(self, status: int, code: str, message: str) -> None:
             record_error(app.store, code)
@@ -309,7 +538,7 @@ def create_handler(app: TextStrataWebApp):
             except GatewayError as exc:
                 self._failure(exc.status, exc.code, str(exc))
 
-        def do_GET(self) -> None:
+        def _route_get(self) -> None:
             parsed = urlparse(self.path)
             path = _canonical_path(parsed.path.rstrip("/") or "/")
             query = parse_qs(parsed.query)
@@ -331,6 +560,24 @@ def create_handler(app: TextStrataWebApp):
                     self._json(503, {"status": "unhealthy", "error": "normalized store missing"})
                     return
                 self._json(200, {"status": "ok", "indexed": indexed, "version": __version__})
+                return
+
+            if path == "/api/textstrata/session":
+                user = self.session.user if self.session else None
+                self._json(200, {
+                    "auth_enabled": app.security is not None,
+                    "user": {"username": user.username, "is_admin": user.is_admin} if user else None,
+                })
+                return
+
+            if path == "/api/textstrata/admin/users":
+                if app.security is None:
+                    self._failure(404, "operation-failed", "Accounts are not enabled for this installation.")
+                    return
+                self._json(200, {"users": [
+                    {"username": u.username, "is_admin": u.is_admin, "disabled": u.disabled}
+                    for u in app.security.identity.list_users()
+                ]})
                 return
 
             if path == "/whoami":
@@ -359,10 +606,10 @@ def create_handler(app: TextStrataWebApp):
                     asset = app.acquisition.assets.resolve(asset_id, preview=query.get("preview", [""])[0] == "1")
                     body = asset.path.read_bytes()
                     self.send_response(200)
-                    self.send_header("Content-Type", asset.media_type)
+                    for name, value in asset_response_headers(asset.media_type, asset.id):
+                        self.send_header(name, value)
                     self.send_header("Content-Length", str(len(body)))
-                    self.send_header("Cache-Control", "public, max-age=31536000, immutable")
-                    self.send_header("X-Content-Type-Options", "nosniff")
+                    self.send_header("Cache-Control", "private, no-store")
                     self.end_headers()
                     self.wfile.write(body)
                 except (ValueError, FileNotFoundError):
@@ -464,8 +711,7 @@ def create_handler(app: TextStrataWebApp):
                 return
 
             if path == "/api/textstrata/vocabulary/refresh":
-                pending = review.refresh_synonym_proposals(app.store, app.items())
-                self._json(200, {"pending": pending, "count": len(pending)})
+                self._failure(405, "method-not-allowed", "Use POST to refresh vocabulary proposals.")
                 return
 
             if path == "/api/textstrata/trash":
@@ -481,7 +727,7 @@ def create_handler(app: TextStrataWebApp):
                 return
 
             if path in {"/api/parity/sync", "/api/acquisition/sync"}:
-                self._json(200, app.sync_upstream())
+                self._failure(405, "method-not-allowed", "Use POST to start a sync.")
                 return
 
             parity_get = {
@@ -492,8 +738,6 @@ def create_handler(app: TextStrataWebApp):
             }
             if path in parity_get:
                 self._proxy("GET", parity_get[path])
-                if path == "/api/parity/queue" and app.gateway:
-                    threading.Thread(target=app.sync_upstream, name="textstrata-queue-sync", daemon=True).start()
                 return
 
             if path == "/api/textstrata/graph":
@@ -857,6 +1101,13 @@ def create_handler(app: TextStrataWebApp):
                 if path == "/api/parity/sync":
                     self._json(200, app.sync_upstream())
                     return True
+                if path == "/api/acquisition/sync":
+                    self._json(200, app.sync_upstream())
+                    return True
+                if path == "/api/textstrata/vocabulary/refresh":
+                    pending = review.refresh_synonym_proposals(app.store, app.items())
+                    self._json(200, {"pending": pending, "count": len(pending)})
+                    return True
                 parity = path.replace("/api/parity", "/api", 1)
                 parity_prefixes = ("/api/queue/", "/api/trash/", "/api/channel/", "/api/maintenance/")
                 parity_fixed = {"/api/queue/clear-completed", "/api/trash/empty"}
@@ -1072,9 +1323,15 @@ def create_handler(app: TextStrataWebApp):
             self._failure(404, "operation-failed", "Unknown TextStrata operation.")
             return True
 
-        def do_POST(self) -> None:
+        def _route_post(self) -> None:
             path = _canonical_path(urlparse(self.path).path.rstrip("/") or "/")
+            if path == "/api/textstrata/admin/invites":
+                self._create_invite()
+                return
             if path == "/api/asset/upload":
+                if not self._same_origin():
+                    self._failure(403, "cross-origin-denied", "Cross-origin uploads are not allowed.")
+                    return
                 ct = self.headers.get("Content-Type", "")
                 if "multipart/form-data" not in ct:
                     self._failure(400, "asset-invalid", "multipart form data required")
@@ -1181,7 +1438,7 @@ def create_handler(app: TextStrataWebApp):
                 self.send_header("Content-Length", "0")
                 self.end_headers()
 
-        def do_DELETE(self) -> None:
+        def _route_delete(self) -> None:
             path = _canonical_path(urlparse(self.path).path.rstrip("/") or "/")
             if not self._same_origin():
                 self._failure(403, "cross-origin-denied", "Cross-origin writes are not allowed.")
@@ -1211,9 +1468,62 @@ def create_handler(app: TextStrataWebApp):
     return Handler
 
 
-def serve(workspace_root: Path, host: str = "0.0.0.0", port: int = 8700) -> None:
+class BoundedThreadingHTTPServer(ThreadingHTTPServer):
+    """Thread-per-request server with a hard cap on concurrent workers.
+
+    Connections beyond the cap are closed immediately instead of spawning an
+    unbounded number of threads.
+    """
+
+    max_workers = 64
+
+    def __init__(self, *args, **kwargs) -> None:
+        self._worker_slots = threading.BoundedSemaphore(self.max_workers)
+        super().__init__(*args, **kwargs)
+
+    def process_request(self, request, client_address) -> None:
+        if not self._worker_slots.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self._worker_slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._worker_slots.release()
+
+
+def serve(
+    workspace_root: Path,
+    host: str = "127.0.0.1",
+    port: int = 8700,
+    *,
+    network: dict | None = None,
+    state_dir: Path | None = None,
+) -> None:
+    """Serve one installation. ``network`` comes from :func:`effective_network`."""
+    network = dict(network or {"mode": "local", "host": host, "port": port, "auth": False})
+    host, port = network["host"], network["port"]
+    if network["mode"] == "local" and not is_loopback_host(host):
+        raise ValueError("Local mode can only bind to a loopback address; configure https or proxy mode for LAN access.")
+    if network["mode"] != "local" and not network.get("auth"):
+        raise ValueError(f"{network['mode']} mode requires authentication.")
+    security = None
+    if network.get("auth"):
+        if state_dir is None:
+            raise ValueError("Authenticated modes require an installation state directory.")
+        security = build_security(network, state_dir)
+        if security.identity.user_count() == 0:
+            raise ValueError("No accounts exist yet. Run `textstrata users bootstrap-admin` before starting the server.")
+    ssl_context = tls_context(network) if network["mode"] == "https" else None
     import socket as _socket
     app = TextStrataWebApp(workspace_root)
+    app.security = security
     handler = create_handler(app)
 
     # Write the PID file BEFORE the server binds/listens so there is no
@@ -1225,9 +1535,12 @@ def serve(workspace_root: Path, host: str = "0.0.0.0", port: int = 8700) -> None
     except OSError:
         pass
 
-    ThreadingHTTPServer.allow_reuse_address = True
+    server_class = type("TextStrataServer", (BoundedThreadingHTTPServer,), {
+        "address_family": _socket.AF_INET6 if ":" in host else _socket.AF_INET,
+        "allow_reuse_address": True,
+    })
     try:
-        server = ThreadingHTTPServer((host, port), handler)
+        server = server_class((host, port), handler)
     except OSError:
         # Bind failed (e.g. port contention) — don't leave a PID file that
         # points at a process which never served anything.
@@ -1236,10 +1549,15 @@ def serve(workspace_root: Path, host: str = "0.0.0.0", port: int = 8700) -> None
         raise
     server.socket.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
     server.daemon_threads = True
+    if ssl_context is not None:
+        # Deferring the handshake moves it onto the per-request worker
+        # thread, so a stalled TLS client cannot block the accept loop.
+        server.socket = ssl_context.wrap_socket(server.socket, server_side=True, do_handshake_on_connect=False)
     app._server = server
 
     try:
-        print(f"textstrata web listening on http://{host}:{port}", flush=True)
+        scheme = "https" if ssl_context is not None else "http"
+        print(f"textstrata web listening on {scheme}://{host}:{port} ({network['mode']} mode)", flush=True)
         server.serve_forever()
     except KeyboardInterrupt:
         pass
@@ -1255,11 +1573,10 @@ def serve(workspace_root: Path, host: str = "0.0.0.0", port: int = 8700) -> None
 
 def main() -> None:
     workspace_root = resolve_workspace()
+    installation = load_installation_config()
+    network = effective_network(workspace_root, installation=installation)
     config = load_cascading_config(workspace_root)
     apply_config_environment(config)
-    network = config.get("network", {})
-    if not isinstance(network, dict):
-        network = {}
-    host = os.environ.get("TEXTSTRATA_HOST") or os.environ.get("FABRIC_HOST", str(network.get("host", "0.0.0.0")))
-    port = int(os.environ.get("TEXTSTRATA_PORT") or os.environ.get("FABRIC_PORT", network.get("port", 8700)))
-    serve(workspace_root=workspace_root, host=host, port=port)
+    os.environ["TEXTSTRATA_HOST"] = network["host"]
+    os.environ["TEXTSTRATA_PORT"] = str(network["port"])
+    serve(workspace_root=workspace_root, network=network, state_dir=installation_state_dir(installation))

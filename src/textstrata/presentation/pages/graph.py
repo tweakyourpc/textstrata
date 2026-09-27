@@ -93,6 +93,7 @@ kbd{background:var(--surface-alt);border:1px solid var(--border);border-radius:4
 <script>
 (async()=>{
 const data=await fetch('/api/textstrata/graph').then(r=>r.json());
+const esc=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
 const params=new URLSearchParams(location.search);
 const types=[...new Set(data.nodes.map(n=>n.type))].sort();
 const palette=["#e94560","#0f3460","var(--success)","var(--graph-orphan)","#7b2d8e","#2d8e7b","#e9c46a","#f4a261","#264653","#2a9d8f","#e76f51","#9c89b8","#70a288","#d5896f"];
@@ -147,7 +148,7 @@ const drag=d3.drag().on('start',(e,d)=>{if(!e.active)simulation.alphaTarget(0.3)
 const circles=nodeGroup.selectAll('circle').data(data.nodes).join('circle')
 .attr('r',d=>Math.max(5,Math.min(20,Math.sqrt((d.score||1)+5)*3)))
 .attr('fill',nodeFill).attr('stroke','var(--graph-node-stroke)').attr('stroke-width',1.5).attr('opacity',.85).call(drag)
-.on('mouseover',(e,d)=>{tooltip.classed('show',true).html('<h3>'+d.title+'</h3><div class="meta">'+d.type.replace(/_/g,' ')+' · score '+d.score+' · in '+d.in+' / out '+d.out+(d.orphan?' · <b style="color:var(--graph-orphan)">orphan</b>':'')+'</div>');d3.select(e.currentTarget).attr('stroke','var(--accent)').attr('stroke-width',2.5)})
+.on('mouseover',(e,d)=>{tooltip.classed('show',true).html('<h3>'+esc(d.title)+'</h3><div class="meta">'+esc(d.type.replace(/_/g,' '))+' · score '+esc(d.score)+' · in '+esc(d.in)+' / out '+esc(d.out)+(d.orphan?' · <b style="color:var(--graph-orphan)">orphan</b>':'')+'</div>');d3.select(e.currentTarget).attr('stroke','var(--accent)').attr('stroke-width',2.5)})
 .on('mousemove',(e)=>{tooltip.style('left',(e.pageX+14)+'px').style('top',(e.pageY-10)+'px')})
 .on('mouseout',(e,d)=>{tooltip.classed('show',false);if(!(selected&&d.id===selected.id))d3.select(e.currentTarget).attr('stroke',d.orphan?'var(--graph-orphan)':'var(--graph-node-stroke)').attr('stroke-width',1.5)})
 .on('click',(e,d)=>{e.stopPropagation();select(d)})
@@ -177,10 +178,10 @@ const acts=document.getElementById('insp-actions');acts.innerHTML='';
  ['Clear','Esc',()=>deselect()]].forEach(([label,key,fn])=>{
 const b=document.createElement('button');b.innerHTML=label+' <b>'+key+'</b>';b.onclick=fn;acts.appendChild(b)});
 const m=document.getElementById('insp-metrics');
-m.innerHTML='<div>score <b>'+d.score+'</b></div><div>degree <b>'+d.degree+'</b></div><div>in / out <b>'+d.in+' / '+d.out+'</b></div><div>authority <b>'+(d.authority||0).toFixed(3)+'</b></div><div>hub <b>'+(d.hub||0).toFixed(3)+'</b></div><div>ingested <b>'+(d.ingested||'—')+'</b></div>'+(d.community?'<div style="grid-column:1/-1">community <b><a href="/community/'+encodeURIComponent(d.community)+'" style="color:var(--success)">'+(nodeById[d.community]?nodeById[d.community].title:d.community)+'</a></b></div>':'')+(d.orphan?'<div style="grid-column:1/-1;color:var(--graph-orphan)"><b>Orphan — link this note or add tags so it joins the mesh.</b></div>':'');
-document.getElementById('insp-tags').innerHTML=d.tags.map(t=>'<span class="tagchip">'+t+'</span>').join('');
+m.innerHTML='<div>score <b>'+esc(d.score)+'</b></div><div>degree <b>'+esc(d.degree)+'</b></div><div>in / out <b>'+esc(d.in)+' / '+esc(d.out)+'</b></div><div>authority <b>'+(d.authority||0).toFixed(3)+'</b></div><div>hub <b>'+(d.hub||0).toFixed(3)+'</b></div><div>ingested <b>'+esc(d.ingested||'—')+'</b></div>'+(d.community?'<div style="grid-column:1/-1">community <b><a href="/community/'+encodeURIComponent(d.community)+'" style="color:var(--success)">'+esc(nodeById[d.community]?nodeById[d.community].title:d.community)+'</a></b></div>':'')+(d.orphan?'<div style="grid-column:1/-1;color:var(--graph-orphan)"><b>Orphan — link this note or add tags so it joins the mesh.</b></div>':'');
+document.getElementById('insp-tags').innerHTML=d.tags.map(t=>'<span class="tagchip">'+esc(t)+'</span>').join('');
 const conns=connectionsOf(d.id);
-document.getElementById('insp-conns').innerHTML=conns.length?conns.slice(0,20).map((c,i)=>{const n=nodeById[c.id];if(!n)return'';return'<div class="conn'+(c.explicit?' explicit':'')+'" data-id="'+c.id+'"><div class="t">'+(i===0?'▸ ':'')+n.title+'</div><div class="why">'+c.why+'</div></div>'}).join(''):'<div style="color:var(--muted);font-size:11px">No connections. This note is isolated — consider adding tags or references.</div>';
+document.getElementById('insp-conns').innerHTML=conns.length?conns.slice(0,20).map((c,i)=>{const n=nodeById[c.id];if(!n)return'';return'<div class="conn'+(c.explicit?' explicit':'')+'" data-id="'+esc(c.id)+'"><div class="t">'+(i===0?'▸ ':'')+esc(n.title)+'</div><div class="why">'+esc(c.why)+'</div></div>'}).join(''):'<div style="color:var(--muted);font-size:11px">No connections. This note is isolated — consider adding tags or references.</div>';
 document.querySelectorAll('#insp-conns .conn').forEach(el=>{el.onclick=()=>{const n=nodeById[el.dataset.id];if(n)select(n)}});
 setStatus(d.title+(focusSet?' · focused: '+focusSet.size+' nodes':'')+' · dblclick or o to open');
 update();
@@ -189,12 +190,12 @@ function deselect(){selected=null;focusSet=null;document.getElementById('inspect
 function focusOn(d){focusSet=neighboursOf(d.id);setStatus('Focused on '+d.title+' · '+focusSet.size+' nodes · x to expand · Esc to clear');update()}
 function expandFocus(){if(!focusSet){if(selected)focusOn(selected);return}const grown=new Set(focusSet);focusSet.forEach(id=>neighboursOf(id).forEach(n=>grown.add(n)));focusSet=grown;setStatus('Expanded · '+focusSet.size+' nodes · x to expand again · Esc to clear');update()}
 function focusCommunity(label){if(!label)return;focusSet=new Set(data.nodes.filter(n=>n.community===label).map(n=>n.id));const comm=(data.communities||[]).find(c=>c.label===label);setStatus('Community: '+(comm?comm.anchor_title:label)+' · '+focusSet.size+' nodes · Esc to clear');update()}
-function itemRow(id,sub){const n=nodeById[id];if(!n)return'';return'<div class="item-row" data-id="'+id+'">'+n.title+'<small>'+sub+'</small></div>'}
+function itemRow(id,sub){const n=nodeById[id];if(!n)return'';return'<div class="item-row" data-id="'+esc(id)+'">'+esc(n.title)+'<small>'+esc(sub)+'</small></div>'}
 const topNodes=[...data.nodes].sort((a,b)=>b.score-a.score||a.id.localeCompare(b.id)).slice(0,5);
 document.getElementById('p-top').innerHTML=topNodes.map(n=>itemRow(n.id,'score '+n.score+' · '+n.type.replace(/_/g,' '))).join('');
 const attn=data.attention||{orphans:[],weak:[]};
 document.getElementById('p-attn').innerHTML=(attn.orphans.slice(0,4).map(id=>itemRow(id,'orphan — no connections')).join(''))+(attn.weak.slice(0,4).map(id=>itemRow(id,'weakly connected')).join(''))||'<div style="color:var(--muted);font-size:11px;padding:2px 6px">All notes are connected.</div>';
-document.getElementById('p-comm').innerHTML=(data.communities||[]).slice(0,8).map(c=>'<div class="row" data-comm="'+c.label+'"><div class="swatch" style="background:'+(commColors[c.label]||'var(--muted)')+'"></div><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+c.anchor_title+'</span><span class="n">'+c.size+'</span></div>').join('');
+document.getElementById('p-comm').innerHTML=(data.communities||[]).slice(0,8).map(c=>'<div class="row" data-comm="'+esc(c.label)+'"><div class="swatch" style="background:'+(commColors[c.label]||'var(--muted)')+'"></div><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(c.anchor_title)+'</span><span class="n">'+esc(c.size)+'</span></div>').join('');
 document.getElementById('p-types').innerHTML=types.map(t=>'<div class="row active" data-type="'+t+'"><div class="swatch" style="background:'+color(t)+'"></div><span>'+t.replace(/_/g,' ')+'</span><span class="n">'+data.nodes.filter(n=>n.type===t).length+'</span></div>').join('');
 document.querySelectorAll('#p-top .item-row,#p-attn .item-row').forEach(el=>{el.onclick=()=>{const n=nodeById[el.dataset.id];if(n){select(n);focusOn(n)}}});
 document.querySelectorAll('#p-comm .row').forEach(el=>{el.onclick=()=>focusCommunity(el.dataset.comm)});

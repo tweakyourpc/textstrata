@@ -2,15 +2,26 @@
 
 from __future__ import annotations
 
-from html import escape
+from html import escape, unescape
 import math
 import re
+from urllib.parse import urlsplit
 
 
 _FRONTMATTER_RE = re.compile(r"\A---\s*\n.*?\n---\s*(?:\n|$)", re.S)
 _FENCED_CODE_RE = re.compile(r"```[\s\S]*?```")
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 _WORD_RE = re.compile(r"\w+")
+
+
+def _safe_link_target(target: str) -> bool:
+    value = unescape(target).strip()
+    if not value or any(ord(char) < 32 for char in value):
+        return False
+    try:
+        return urlsplit(value).scheme.lower() in {"", "http", "https", "mailto"}
+    except ValueError:
+        return False
 
 
 def inline_markdown(text: str, *, link_resolver: dict[str, tuple[str, str]] | None = None) -> str:
@@ -39,7 +50,10 @@ def inline_markdown(text: str, *, link_resolver: dict[str, tuple[str, str]] | No
     escaped = re.sub(r"`([^`]+)`", lambda m: f"<code>{m.group(1)}</code>", escaped)
     escaped = re.sub(
         r"\[([^\]]+)\]\(([^)]+)\)",
-        lambda m: f'<a href="{escape(m.group(2), quote=True)}">{m.group(1)}</a>',
+        lambda m: (
+            f'<a href="{escape(m.group(2), quote=True)}">{m.group(1)}</a>'
+            if _safe_link_target(m.group(2)) else m.group(1)
+        ),
         escaped,
     )
     escaped = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", escaped)
@@ -92,7 +106,8 @@ def markdown_to_html(markdown: str, source_url: str | None = None, *, link_resol
     in_code = False
     in_timestamp_section = False
 
-    render_inline = lambda value: inline_markdown(value, link_resolver=link_resolver)
+    def render_inline(value: str) -> str:
+        return inline_markdown(value, link_resolver=link_resolver)
 
     def flush_paragraph() -> None:
         nonlocal paragraph
@@ -131,7 +146,7 @@ def markdown_to_html(markdown: str, source_url: str | None = None, *, link_resol
         if in_code:
             code_lines.append(raw)
             continue
-        if in_timestamp_section and source_url:
+        if in_timestamp_section and source_url and _safe_link_target(source_url):
             timestamp = re.match(r"^\[(\d{1,2}:\d{1,2}(?::\d{1,2})?)\]\s+(.+)$", line)
             if timestamp:
                 flush_paragraph()

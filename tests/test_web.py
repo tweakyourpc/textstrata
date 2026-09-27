@@ -17,9 +17,10 @@ import urllib.error
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from tempfile import mkdtemp
+from unittest.mock import patch
 
 from textstrata import __version__
-from textstrata.web import TextStrataWebApp, create_handler
+from textstrata.web import TextStrataWebApp, create_handler, serve
 
 TEST_ITEM = """---
 id: test.hello
@@ -316,6 +317,38 @@ class WebServerTests(unittest.TestCase):
         status, body, _ = self._get("/asset/nonexistent")
         self.assertEqual(status, 404)
 
+    def test_asset_response_is_not_publicly_cached(self):
+        asset = self.app.acquisition.assets.put(b"photo", "photo.jpg", "image/jpeg")
+        status, body, headers = self._get(f"/asset/{asset.id}")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Cache-Control"], "private, no-store")
+
+    def test_mutating_get_routes_do_not_change_state(self):
+        with patch.object(self.app, "sync_upstream") as sync, patch(
+            "textstrata.web.review.refresh_synonym_proposals"
+        ) as refresh:
+            for path in (
+                "/api/textstrata/vocabulary/refresh",
+                "/api/parity/sync",
+                "/api/acquisition/sync",
+            ):
+                status, _, _ = self._get(path)
+                self.assertEqual(status, 405, path)
+            sync.assert_not_called()
+            refresh.assert_not_called()
+
+    def test_sync_and_vocabulary_refresh_are_post_only(self):
+        with patch.object(self.app, "sync_upstream", return_value={"synced": True}) as sync:
+            status, body, _ = self._post("/api/acquisition/sync")
+            self.assertEqual(status, 200)
+            self.assertTrue(json.loads(body)["synced"])
+            sync.assert_called_once_with()
+        with patch("textstrata.web.review.refresh_synonym_proposals", return_value=[]) as refresh:
+            status, body, _ = self._post("/api/textstrata/vocabulary/refresh")
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(body)["count"], 0)
+            refresh.assert_called_once()
+
     def test_get_graph(self):
         status, body, _ = self._get("/graph")
         self.assertEqual(status, 200)
@@ -399,6 +432,13 @@ class WebServerTests(unittest.TestCase):
                                      ct="text/plain")
         self.assertEqual(status, 400)
 
+    def test_post_asset_upload_rejects_cross_origin(self):
+        status, _, _ = self._post(
+            "/api/asset/upload", data=b"ignored", ct="multipart/form-data",
+            headers={"Origin": "https://untrusted.example"},
+        )
+        self.assertEqual(status, 403)
+
     # --- POST /api/textstrata/settings ---
     def test_post_settings(self):
         payload = json.dumps({"revision_limit": 2}).encode("utf-8")
@@ -465,6 +505,12 @@ class WebServerTests(unittest.TestCase):
     def test_unknown_post_route(self):
         status, _, _ = self._post("/api/unknown")
         self.assertEqual(status, 404)
+
+
+class ServerBindingTests(unittest.TestCase):
+    def test_lan_bind_fails_before_creating_workspace(self):
+        with self.assertRaisesRegex(ValueError, "loopback"):
+            serve(Path("/tmp/textstrata-refused-lan-bind"), host="0.0.0.0", port=0)
 
 
 class CatalogTests(unittest.TestCase):
