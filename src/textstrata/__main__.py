@@ -77,6 +77,103 @@ def cmd_ingest(paths: list[str]) -> int:
     return 0
 
 
+def _google_adapter(config_path: str | None = None):
+    from .google_drive import GoogleDriveAdapter, build_google_services, default_config_path, load_google_config
+
+    selected = Path(config_path).expanduser() if config_path else default_config_path()
+    config = load_google_config(selected)
+    sheets, docs = build_google_services(writeback_enabled=config.writeback_enabled)
+    return GoogleDriveAdapter(config, sheets, docs)
+
+
+def cmd_ingest_google(*, dry_run: bool = False, config_path: str | None = None) -> int:
+    from .google_drive import GoogleDriveError, ingest_google
+
+    store = TextStrataStore(_root())
+    catalog = _catalog(_root())
+    try:
+        adapter = _google_adapter(config_path)
+        results = ingest_google(store, adapter, dry_run=dry_run, catalog=catalog)
+        for result in results:
+            suffix = f"  {result.get('error')}" if result.get("error") else ""
+            print(f"{result['action']:9s} record={result['record']} doc={result['doc_id']}{suffix}")
+        for error in getattr(adapter, "row_errors", []):
+            print(f"ERROR {error}")
+        return 1 if any(item["action"] == "ERROR" for item in results) else 0
+    except GoogleDriveError as exc:
+        print(str(exc), flush=True)
+        return 1
+    finally:
+        catalog.close()
+
+
+def cmd_google_health(*, config_path: str | None = None) -> int:
+    from .google_drive import health_google
+
+    try:
+        result = health_google(_google_adapter(config_path))
+    except Exception as exc:
+        result = {"ok": False, "code": getattr(exc, "code", "AUTHENTICATION_FAILED"), "error": str(exc)}
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0 if result.get("ok") else 1
+
+
+def _bridge_client(config_path: str | None = None):
+    from .google_bridge import BridgeClient, load_bridge_config
+    return BridgeClient(load_bridge_config(config_path))
+
+
+def cmd_bridge(action: str, *, dry_run: bool = False, config_path: str | None = None) -> int:
+    from .google_bridge import BridgeError, ingest_bridge, mirror_bridge
+    try:
+        client = _bridge_client(config_path)
+        if action == "health":
+            result = client.call("ping")
+            print(f"google-bridge healthy protocol={result['version']}")
+            return 0
+        store = TextStrataStore(_root())
+        if action == "mirror":
+            catalog = None if dry_run else _catalog(_root())
+            try:
+                results = mirror_bridge(store, client, dry_run=dry_run, catalog=catalog)
+            finally:
+                if catalog is not None:
+                    catalog.close()
+        else:
+            catalog = None if dry_run else _catalog(_root())
+            try:
+                results = ingest_bridge(store, client, dry_run=dry_run, catalog=catalog)
+            finally:
+                if catalog is not None:
+                    catalog.close()
+        for result in results:
+            extra = f" ack={result['ack']}" if result.get("ack") else f" error={result['error']}" if result.get("error") else ""
+            print(f"{result['action']} record={result['record']}{extra}")
+        return 1 if any(result["action"] in {"ERROR", "CONFLICT"} or result.get("ack") not in (None, "OK", "PENDING") for result in results) else 0
+    except BridgeError as exc:
+        print(exc.code)
+        return 1
+
+
+def cmd_sources_add(kind: str, *, config_path: str | None = None) -> int:
+    if kind not in {"google-drive", "google-bridge"}:
+        print(f"Unsupported source: {kind}")
+        return 2
+    path = Path(config_path).expanduser() if config_path else Path("config/sources.yaml").resolve()
+    if path.exists():
+        print(f"Source configuration already exists: {path}")
+        return 0
+    path.parent.mkdir(parents=True, exist_ok=True)
+    content = (
+        "google_bridge:\n  endpoint: \"${TEXTSTRATA_GOOGLE_BRIDGE_URL}\"\n"
+        if kind == "google-bridge" else
+        "google_drive:\n  spreadsheet_id: \"${TEXTSTRATA_GOOGLE_MANIFEST_ID}\"\n  worksheet: \"Manifest\"\n  eligible_statuses: [Ready, Updated]\n  writeback:\n    enabled: false\n    success_status: Ingested\n"
+    )
+    path.write_text(content, encoding="utf-8")
+    print(f"Created {path}. Configure its environment variables and run `textstrata sources health {kind}`.")
+    return 0
+
+
 def cmd_retrieval_inspect(query: str, json_output: bool = False, limit: int = 5) -> int:
     """Show the shared retrieval trace without invoking an LLM."""
     store = TextStrataStore(_root())
@@ -1002,8 +1099,24 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--workspace", metavar="PATH", help="isolated TextStrata workspace")
     sub = p.add_subparsers(dest="command", required=True)
 
-    ingest_p = sub.add_parser("ingest", help="ingest one or more files")
-    ingest_p.add_argument("files", nargs="+", metavar="FILE", help="path to markdown file(s)")
+    ingest_p = sub.add_parser("ingest", help="ingest files or a configured source")
+    ingest_p.add_argument("files", nargs="*", metavar="FILE", help="path to markdown file(s), google, or google-bridge")
+    ingest_p.add_argument("--dry-run", action="store_true", help="inspect a source without changing the workspace")
+    ingest_p.add_argument("--config", metavar="PATH", help="source configuration path")
+
+    sources_p = sub.add_parser("sources", help="configure and inspect external sources")
+    sources_sub = sources_p.add_subparsers(dest="sources_action", required=True)
+    sources_add = sources_sub.add_parser("add", help="create source configuration")
+    sources_add.add_argument("kind", choices=("google-drive", "google-bridge"))
+    sources_add.add_argument("--config", metavar="PATH")
+    sources_health = sources_sub.add_parser("health", help="test source configuration and access")
+    sources_health.add_argument("kind", choices=("google-drive", "google-bridge"))
+    sources_health.add_argument("--config", metavar="PATH")
+
+    mirror_p = sub.add_parser("mirror", help="mirror canonical articles to a configured transport")
+    mirror_p.add_argument("source", choices=("google-bridge",))
+    mirror_p.add_argument("--dry-run", action="store_true")
+    mirror_p.add_argument("--config", metavar="PATH")
 
     vault_import_p = sub.add_parser("vault-import", help="import an Obsidian vault")
     vault_import_p.add_argument("path", metavar="PATH", help="Obsidian vault directory")
@@ -1120,7 +1233,22 @@ def main(argv: list[str] | None = None) -> int:
     apply_config_environment(config)
 
     if args.command == "ingest":
+        if args.files == ["google-bridge"]:
+            return cmd_bridge("ingest", dry_run=args.dry_run, config_path=args.config)
+        if args.files and args.files[0] == "google":
+            return cmd_ingest_google(dry_run=args.dry_run, config_path=args.config)
+        if not args.files or args.dry_run:
+            parser.error("ingest requires files, or use `ingest google [--dry-run]`")
         return cmd_ingest(args.files)
+    if args.command == "sources":
+        if args.sources_action == "add":
+            return cmd_sources_add(args.kind, config_path=args.config)
+        if args.sources_action == "health":
+            if args.kind == "google-drive":
+                return cmd_google_health(config_path=args.config)
+            return cmd_bridge("health", config_path=args.config)
+    if args.command == "mirror":
+        return cmd_bridge("mirror", dry_run=args.dry_run, config_path=args.config)
     if args.command == "init":
         return cmd_init()
     if args.command == "doctor":

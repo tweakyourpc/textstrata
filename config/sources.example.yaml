@@ -1,0 +1,16 @@
+# Copy to config/sources.yaml or set TEXTSTRATA_SOURCES_CONFIG.
+# Values may reference environment variables with ${NAME}.
+google_drive:
+  spreadsheet_id: "${TEXTSTRATA_GOOGLE_MANIFEST_ID}"
+  worksheet: "Manifest"
+  eligible_statuses:
+    - Ready
+    - Updated
+  writeback:
+    enabled: false
+    success_status: Ingested
+
+# Optional Apps Script transport. Secret is read from
+# TEXTSTRATA_GOOGLE_BRIDGE_SECRET, never from this file.
+google_bridge:
+  endpoint: "${TEXTSTRATA_GOOGLE_BRIDGE_URL}"
