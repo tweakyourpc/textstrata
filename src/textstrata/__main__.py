@@ -25,7 +25,11 @@ from .research import daily_briefing, relate, research, synthesize
 from .retrieval import retrieve
 from .store import TextStrataStore
 from .validate import validate
-from .workspace import apply_config_environment, load_cascading_config, resolve_workspace
+from .workspace import (
+    apply_config_environment, effective_network, installation_config_path, installation_state_dir,
+    load_cascading_config, load_installation_config, resolve_workspace,
+    save_installation_config, validate_installation_config, validate_network,
+)
 from .vault import export_obsidian_vault, import_obsidian_vault
 from .application.setup import initialize_workspace, setup_status
 
@@ -163,7 +167,7 @@ def cmd_google_conflict(args: argparse.Namespace) -> int:
     store = TextStrataStore(_root())
     catalog = None if args.action == "inspect" else _catalog(_root())
     try:
-        client = _bridge_client(args.config)
+        client = _bridge_client(args.source_config)
         if args.action == "inspect":
             inspected = inspect_library_conflict(store, client, args.item_id)
             snapshot = save_library_conflict_snapshot(store, inspected)
@@ -538,6 +542,118 @@ def cmd_check(verbose: bool = False) -> int:
 def cmd_init() -> int:
     result = initialize_workspace(_root())
     print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_setup(args: argparse.Namespace, workspace_root: Path) -> int:
+    try:
+        existing = load_installation_config(allow_missing=True)
+    except ValueError:
+        if not args.storage:
+            raise ValueError("invalid installation config; pass --storage to repair it explicitly") from None
+        existing = {}
+    prior_network = dict(existing.get("network", {}))
+    proposed_workspace = args.storage or args.workspace or existing.get("workspace") or str(workspace_root)
+    mode = args.mode or prior_network.get("mode") or "local"
+    if mode != prior_network.get("mode", mode):
+        # Mode-specific settings from a different mode do not carry over.
+        prior_network = {key: prior_network[key] for key in ("host", "port") if key in prior_network}
+    proposed_host = args.host or prior_network.get("host") or "127.0.0.1"
+    proposed_port = args.port if args.port is not None else prior_network.get("port", 8700)
+    if not args.non_interactive:
+        proposed_workspace = input(f"Workspace [{proposed_workspace}]: ").strip() or proposed_workspace
+        proposed_host = input(f"Bind address [{proposed_host}]: ").strip() or proposed_host
+        entered_port = input(f"Port [{proposed_port}]: ").strip()
+        proposed_port = int(entered_port) if entered_port else proposed_port
+    network: dict[str, object] = {"mode": mode, "host": proposed_host, "port": proposed_port}
+    if mode == "local":
+        network["auth"] = args.auth if args.auth is not None else prior_network.get("auth", False)
+    else:
+        network["auth"] = True
+    if mode == "https":
+        tls = prior_network.get("tls", {})
+        network["tls"] = {
+            "cert_file": str(Path(args.tls_cert).expanduser().resolve()) if args.tls_cert else tls.get("cert_file"),
+            "key_file": str(Path(args.tls_key).expanduser().resolve()) if args.tls_key else tls.get("key_file"),
+        }
+    if mode in {"https", "proxy"} and (args.public_url or prior_network.get("public_url")):
+        network["public_url"] = args.public_url or prior_network.get("public_url")
+    if mode == "proxy":
+        network["trusted_proxies"] = args.trusted_proxy or prior_network.get("trusted_proxies")
+    document: dict[str, object] = {
+        "schema_version": 1,
+        "workspace": str(Path(proposed_workspace).expanduser().resolve()),
+        "network": network,
+    }
+    state_dir = args.state_dir or existing.get("state_dir")
+    if state_dir:
+        document["state_dir"] = str(Path(state_dir).expanduser().resolve())
+    value = validate_installation_config(document)
+    if mode == "https":
+        for key in ("cert_file", "key_file"):
+            if not Path(value["network"]["tls"][key]).is_file():
+                raise ValueError(f"TLS {key.replace('_', ' ')} does not exist: {value['network']['tls'][key]}")
+    initialize_workspace(value["workspace"])
+    path = save_installation_config(value)
+    print(json.dumps({"config": str(path), "installation": value}, indent=2))
+    if value["network"]["auth"]:
+        print("Accounts are required. Create the first administrator with: textstrata users bootstrap-admin --username NAME")
+    return 0
+
+
+def _read_new_password(from_stdin: bool) -> str:
+    import getpass
+    import sys
+    if from_stdin:
+        return sys.stdin.readline().rstrip("\n")
+    first = getpass.getpass("New password: ")
+    if first != getpass.getpass("Confirm password: "):
+        raise ValueError("passwords do not match")
+    return first
+
+
+def cmd_users(args: argparse.Namespace) -> int:
+    from .auth import AuthError, IdentityStore
+    from .web_auth import IDENTITY_FILENAME
+    installation = load_installation_config(allow_missing=True)
+    if not installation:
+        raise ValueError("no installation config; run `textstrata setup` first")
+    identity = IdentityStore(installation_state_dir(installation) / IDENTITY_FILENAME)
+    try:
+        if args.users_command == "bootstrap-admin":
+            user = identity.bootstrap_admin(args.username, _read_new_password(args.password_stdin))
+            print(f"Created administrator {user.username}")
+        elif args.users_command == "invite":
+            code = identity.create_invite(created_by=None, is_admin=args.admin, note=args.note or "",
+                                          ttl_seconds=args.ttl_hours * 3600)
+            public = installation["network"].get("public_url")
+            print(f"{public}/invite/{code}" if public else f"/invite/{code}  (prefix with the address people use to reach this server)")
+            print(f"Single use; expires in {args.ttl_hours} hours.")
+        elif args.users_command == "list":
+            for user in identity.list_users():
+                flags = [flag for flag, on in (("admin", user.is_admin), ("disabled", user.disabled)) if on]
+                print(user.username + (f"  [{', '.join(flags)}]" if flags else ""))
+        elif args.users_command in {"disable", "enable"}:
+            user = identity.set_disabled(args.username, args.users_command == "disable")
+            print(f"{user.username}: {'disabled' if user.disabled else 'enabled'}")
+        elif args.users_command == "revoke-sessions":
+            print(f"Revoked {identity.revoke_user_sessions(args.username)} session(s)")
+        elif args.users_command == "set-password":
+            identity.set_password(args.username, _read_new_password(args.password_stdin))
+            print("Password updated; existing sessions were signed out.")
+    except AuthError as exc:
+        raise ValueError(str(exc)) from None
+    return 0
+
+
+def cmd_config(action: str, workspace_root: Path) -> int:
+    selected = installation_config_path()
+    installed = load_installation_config()
+    network = effective_network(workspace_root, installation=installed)
+    if action == "show":
+        print(json.dumps({"path": str(selected), "configured": installed or None, "effective_network": network}, indent=2))
+    else:
+        print(f"Configuration valid: {selected}")
     return 0
 
 
@@ -1114,9 +1230,16 @@ def cmd_web() -> int:
     return 0
 
 
-def cmd_restart(host: str, port: int, workspace_root: Path) -> int:
+def cmd_restart(network: dict, workspace_root: Path, state_dir: Path) -> int:
     import signal
     import time
+    # Validate everything the new server needs before stopping the old one.
+    network = validate_network(network)
+    if network["auth"]:
+        from .auth import IdentityStore
+        from .web_auth import IDENTITY_FILENAME
+        if IdentityStore(state_dir / IDENTITY_FILENAME).user_count() == 0:
+            raise ValueError("No accounts exist yet. Run `textstrata users bootstrap-admin` before restarting.")
     pid_path = workspace_root / ".fabric" / "server.pid"
     if pid_path.exists():
         try:
@@ -1133,7 +1256,7 @@ def cmd_restart(host: str, port: int, workspace_root: Path) -> int:
     else:
         print("No running server found, starting fresh", flush=True)
     from .web import serve as web_serve
-    web_serve(host=host, port=port, workspace_root=workspace_root)
+    web_serve(workspace_root=workspace_root, network=network, state_dir=state_dir)
     return 0
 
 
@@ -1145,29 +1268,30 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="textstrata",
         description="TextStrata — layered knowledge infrastructure for local-first work.",
-        epilog="Workspace precedence: --workspace, TEXTSTRATA_WORKSPACE, then ./.workspace.",
+        epilog="Workspace precedence: --workspace, environment, installation config, then ./.workspace.",
     )
     p.add_argument("--workspace", metavar="PATH", help="isolated TextStrata workspace")
+    p.add_argument("--config", dest="installation_config", metavar="PATH", help="installation JSON path (overrides TEXTSTRATA_CONFIG)")
     sub = p.add_subparsers(dest="command", required=True)
 
     ingest_p = sub.add_parser("ingest", help="ingest files or a configured source")
     ingest_p.add_argument("files", nargs="*", metavar="FILE", help="path to markdown file(s), google, or google-bridge")
     ingest_p.add_argument("--dry-run", action="store_true", help="inspect a source without changing the workspace")
-    ingest_p.add_argument("--config", metavar="PATH", help="source configuration path")
+    ingest_p.add_argument("--config", dest="source_config", metavar="PATH", help="source configuration path")
 
     sources_p = sub.add_parser("sources", help="configure and inspect external sources")
     sources_sub = sources_p.add_subparsers(dest="sources_action", required=True)
     sources_add = sources_sub.add_parser("add", help="create source configuration")
     sources_add.add_argument("kind", choices=("google-drive", "google-bridge"))
-    sources_add.add_argument("--config", metavar="PATH")
+    sources_add.add_argument("--config", dest="source_config", metavar="PATH")
     sources_health = sources_sub.add_parser("health", help="test source configuration and access")
     sources_health.add_argument("kind", choices=("google-drive", "google-bridge"))
-    sources_health.add_argument("--config", metavar="PATH")
+    sources_health.add_argument("--config", dest="source_config", metavar="PATH")
 
     mirror_p = sub.add_parser("mirror", help="mirror canonical articles to a configured transport")
     mirror_p.add_argument("source", choices=("google-bridge",))
     mirror_p.add_argument("--dry-run", action="store_true")
-    mirror_p.add_argument("--config", metavar="PATH")
+    mirror_p.add_argument("--config", dest="source_config", metavar="PATH")
 
     conflict_p = sub.add_parser("google-conflict", help="inspect or explicitly resolve a Library Conflict")
     conflict_p.add_argument("action", choices=("inspect", "keep_local", "keep_google", "manual_merge"))
@@ -1176,7 +1300,7 @@ def build_parser() -> argparse.ArgumentParser:
     conflict_p.add_argument("--expected-google-fingerprint")
     conflict_p.add_argument("--reason")
     conflict_p.add_argument("--file", help="merged Markdown file for manual_merge")
-    conflict_p.add_argument("--config", metavar="PATH")
+    conflict_p.add_argument("--config", dest="source_config", metavar="PATH")
 
     vault_import_p = sub.add_parser("vault-import", help="import an Obsidian vault")
     vault_import_p.add_argument("path", metavar="PATH", help="Obsidian vault directory")
@@ -1284,6 +1408,36 @@ def build_parser() -> argparse.ArgumentParser:
         help="report items whose approved policy or tags disagree with what ingest suggested",
     )
     sub.add_parser("mcp", help="run the stdio MCP server")
+    setup_p = sub.add_parser("setup", help="configure a local installation")
+    setup_p.add_argument("--storage", metavar="PATH", help="workspace location")
+    setup_p.add_argument("--host", metavar="ADDRESS", help="bind address (loopback in local mode)")
+    setup_p.add_argument("--mode", choices=("local", "https", "proxy"), help="network mode")
+    setup_p.add_argument("--auth", action=argparse.BooleanOptionalAction, default=None, help="require accounts in local mode")
+    setup_p.add_argument("--tls-cert", metavar="PATH", help="certificate chain for https mode")
+    setup_p.add_argument("--tls-key", metavar="PATH", help="private key for https mode")
+    setup_p.add_argument("--public-url", metavar="URL", help="https origin people use to reach the service")
+    setup_p.add_argument("--trusted-proxy", metavar="CIDR", action="append", help="reverse proxy address (repeatable)")
+    setup_p.add_argument("--state-dir", metavar="PATH", help="directory for accounts and other installation state")
+    setup_p.add_argument("--port", type=int, help="HTTP port")
+    setup_p.add_argument("--non-interactive", action="store_true", help="use supplied values and defaults without prompts")
+    config_p = sub.add_parser("config", help="inspect or validate effective configuration")
+    config_p.add_argument("action", choices=("show", "check"))
+    users_p = sub.add_parser("users", help="manage installation accounts")
+    users_sub = users_p.add_subparsers(dest="users_command", required=True)
+    boot_p = users_sub.add_parser("bootstrap-admin", help="create the first administrator (only when no accounts exist)")
+    boot_p.add_argument("--username", required=True)
+    boot_p.add_argument("--password-stdin", action="store_true", help="read the password from standard input")
+    invite_p = users_sub.add_parser("invite", help="print a single-use invitation link")
+    invite_p.add_argument("--admin", action="store_true", help="the invited account becomes an administrator")
+    invite_p.add_argument("--ttl-hours", type=int, default=72)
+    invite_p.add_argument("--note", help="who the invitation is for")
+    users_sub.add_parser("list", help="list accounts")
+    for name, text in (("disable", "disable an account and sign it out"), ("enable", "re-enable an account"),
+                       ("revoke-sessions", "sign an account out everywhere")):
+        users_sub.add_parser(name, help=text).add_argument("username")
+    passwd_p = users_sub.add_parser("set-password", help="replace a password and sign the account out")
+    passwd_p.add_argument("username")
+    passwd_p.add_argument("--password-stdin", action="store_true")
     sub.add_parser("web", help="run the local HTTP presentation server")
     restart_p = sub.add_parser("restart", help="restart the web server")
     restart_p.add_argument("--host", help="host to bind")
@@ -1295,17 +1449,35 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    workspace_root = resolve_workspace(args.workspace)
+    if args.installation_config:
+        os.environ["TEXTSTRATA_CONFIG"] = str(Path(args.installation_config).expanduser().resolve())
+    if args.command != "setup":
+        load_installation_config()
+    selected_workspace = (args.storage or args.workspace) if args.command == "setup" else args.workspace
+    try:
+        workspace_root = resolve_workspace(selected_workspace, allow_missing_installation=args.command == "setup")
+    except ValueError:
+        if args.command != "setup" or args.storage:
+            raise
+        raise ValueError("invalid installation config; pass --storage to repair it explicitly") from None
+    if args.command == "setup":
+        return cmd_setup(args, workspace_root)
+    if args.command == "config":
+        return cmd_config(args.action, workspace_root)
+    if args.command == "users":
+        return cmd_users(args)
     os.environ["TEXTSTRATA_WORKSPACE"] = str(workspace_root)
     os.environ.setdefault("MARKBASE_WORKSPACE", str(workspace_root))
     config = load_cascading_config(workspace_root)
-    apply_config_environment(config)
+    network = effective_network(workspace_root) if args.command in {"web", "restart"} else None
+    if args.command not in {"web", "restart"}:
+        apply_config_environment(config)
 
     if args.command == "ingest":
         if args.files == ["google-bridge"]:
-            return cmd_bridge("ingest", dry_run=args.dry_run, config_path=args.config)
+            return cmd_bridge("ingest", dry_run=args.dry_run, config_path=args.source_config)
         if args.files and args.files[0] == "google":
-            return cmd_ingest_google(dry_run=args.dry_run, config_path=args.config)
+            return cmd_ingest_google(dry_run=args.dry_run, config_path=args.source_config)
         if not args.files or args.dry_run:
             parser.error("ingest requires files, or use `ingest google [--dry-run]`")
         return cmd_ingest(args.files)
@@ -1313,13 +1485,13 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_google_conflict(args)
     if args.command == "sources":
         if args.sources_action == "add":
-            return cmd_sources_add(args.kind, config_path=args.config)
+            return cmd_sources_add(args.kind, config_path=args.source_config)
         if args.sources_action == "health":
             if args.kind == "google-drive":
-                return cmd_google_health(config_path=args.config)
-            return cmd_bridge("health", config_path=args.config)
+                return cmd_google_health(config_path=args.source_config)
+            return cmd_bridge("health", config_path=args.source_config)
     if args.command == "mirror":
-        return cmd_bridge("mirror", dry_run=args.dry_run, config_path=args.config)
+        return cmd_bridge("mirror", dry_run=args.dry_run, config_path=args.source_config)
     if args.command == "init":
         return cmd_init()
     if args.command == "doctor":
@@ -1404,10 +1576,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "web":
         return cmd_web()
     if args.command == "restart":
+        overrides = {key: value for key, value in (("host", args.host), ("port", args.port)) if value is not None}
         return cmd_restart(
-            host=args.host or os.environ.get("TEXTSTRATA_HOST") or os.environ.get("FABRIC_HOST", "0.0.0.0"),
-            port=args.port or int(os.environ.get("TEXTSTRATA_PORT") or os.environ.get("FABRIC_PORT", "8700")),
+            {**network, **overrides},
             workspace_root=workspace_root,
+            state_dir=installation_state_dir(load_installation_config()),
         )
     parser.print_help()
     return 2

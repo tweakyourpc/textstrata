@@ -5,12 +5,24 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from textstrata.acquisition import AssetStore
-from textstrata.presentation.markdown import inline_markdown
+from textstrata.presentation.markdown import inline_markdown, markdown_to_html
 from textstrata.presentation.pages.media import render_media_html
 from textstrata.presentation.skin import PAPER_SKIN
 
 
 class MediaLibraryTests(unittest.TestCase):
+    def test_markdown_blocks_active_link_schemes(self):
+        for target in ("javascript:alert", "JaVaScRiPt:alert", "data:text/html,payload", "java\tscript:alert", "http://[invalid"):
+            rendered = inline_markdown(f"[open]({target})")
+            self.assertNotIn("href=", rendered, target)
+            self.assertIn("open", rendered)
+        self.assertIn('href="https://example.com"', inline_markdown("[safe](https://example.com)"))
+        self.assertIn('href="/item/example"', inline_markdown("[note](/item/example)"))
+
+    def test_transcript_source_url_cannot_create_active_link(self):
+        rendered = markdown_to_html("## Timestamped transcript\n[00:01] Line", source_url="javascript:alert")
+        self.assertNotIn("href=", rendered)
+
     def test_asset_index_is_stable_and_has_embed_metadata(self):
         with TemporaryDirectory() as directory:
             store = AssetStore(Path(directory))

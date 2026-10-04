@@ -26,6 +26,14 @@ ERRORS = {
     "revision-not-found": "The selected retained revision no longer exists.",
     "trash-conflict": "A restore would overwrite an existing live item.",
     "caption-export-not-found": "The requested note does not contain an exportable YouTube transcript.",
+    "authentication-required": "The request had no valid signed-in session; sign in and retry.",
+    "csrf-invalid": "A write arrived without the session's CSRF token; reload the page and retry.",
+    "admin-required": "The action is limited to installation administrators.",
+    "proxy-required": "A proxy-mode server refused a connection that did not arrive over HTTPS from a trusted reverse proxy.",
+    "host-not-allowed": "A local-mode server refused a request addressed to a non-loopback host name.",
+    "invite-invalid": "An invitation request was malformed or the invitation could not be created.",
+    "form-invalid": "A sign-in or invitation form submission could not be read.",
+    "method-not-allowed": "The route does not accept that HTTP method.",
     "operation-failed": "An unexpected local operation failed; inspect the service log and preserve the original input.",
 }
 

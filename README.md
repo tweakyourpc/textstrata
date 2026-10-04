@@ -110,6 +110,49 @@ The web collection reads normalized items from the workspace selected by
 explicit setup message instead of a blank collection. Keep the workspace on a
 durable path; temporary roots are only appropriate for tests.
 
+By default the web server runs in personal **local** mode: loopback only, no
+accounts, and requests addressed to non-loopback host names are refused. It
+never binds a LAN address without accounts.
+
+Run `textstrata setup` to choose a workspace, network mode, and bind settings,
+then `textstrata config show` to inspect the effective settings. Setup can be
+rerun to change them. For unattended installs, pass `--non-interactive` with
+`--storage`, `--host`, and `--port`. The installation JSON defaults to the
+platform user-config directory; use `TEXTSTRATA_CONFIG` or `--config PATH` to
+choose a different location. Setup does not move existing workspace data when
+its configured path changes.
+
+Network modes (every address, port, and URL is your choice):
+
+| Mode | Setup flags | Accounts |
+| --- | --- | --- |
+| `local` | `--host 127.0.0.1` (optionally `--auth`) | Optional |
+| `https` | `--mode https --host ADDRESS --tls-cert PATH --tls-key PATH` | Required |
+| `proxy` | `--mode proxy --host ADDRESS --public-url https://NAME --trusted-proxy CIDR` | Required |
+
+In account modes, create the first administrator locally, then invite people:
+
+```bash
+textstrata users bootstrap-admin --username alex
+textstrata users invite            # prints a single-use, expiring link
+textstrata users list
+textstrata users disable NAME      # also: enable, revoke-sessions, set-password
+```
+
+The server refuses to start in an account mode until an administrator exists.
+Account state lives in the installation state directory (`--state-dir`), not in
+the workspace. Per-space permissions are not implemented yet: every signed-in
+account can read and edit the whole workspace, and only administrators can
+create invitations or restart the service.
+
+The local CLI and stdio MCP, including project bootstrap and reviewed article
+proposals, remain trusted-operator interfaces. The Google bridge mirrors the
+installation-wide corpus and does not apply browser account permissions. Do
+not use it for private team spaces until space authorization and matching
+Google access rules are implemented. Existing non-loopback HTTP deployments
+need an authenticated HTTPS or trusted-proxy configuration and first admin
+before restarting with this security foundation.
+
 The Docker **lite** profile is the portable core and does not start Ollama.
 The **full** profile adds document/image/YouTube/audio acquisition packages and
 an optional Ollama companion; it still does not pull a model automatically.

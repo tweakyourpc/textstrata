@@ -36,6 +36,11 @@ class GraphBrowserContractTests(unittest.TestCase):
         self.assertNotIn("d3.event", scripts[0])
         self.assertIn("showLinks=this.classList.toggle('active')", scripts[0])
         self.assertIn("showSim=this.classList.toggle('active')", scripts[0])
+        self.assertIn("esc(d.title)", scripts[0])
+        self.assertIn("esc(n.title)", scripts[0])
+        self.assertIn("esc(t)", scripts[0])
+        self.assertNotIn("'<h3>'+d.title", scripts[0])
+        self.assertNotIn("+'<small>'+sub", scripts[0])
 
 
 if __name__ == "__main__":
