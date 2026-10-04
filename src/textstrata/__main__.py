@@ -15,8 +15,10 @@ from pathlib import Path
 
 from . import activity, classify, embeddings, frontmatter
 from .catalog import Catalog
+from .context import get_project_context, render_project_context
 from .control import backup_workspace, control_doctor, load_config, load_effective_config, process_approved_ingest, restore_preview, restore_workspace
 from .ingest import _update_file, build_item, ingest_file
+from .knowledge_changes import article_change_proposal, finish_article_change
 from .linking import build_links, links_for
 from .presentation import PAPER_SKIN, RenderContext, render_item_html, render_text
 from .research import daily_briefing, relate, research, synthesize
@@ -81,6 +83,134 @@ def cmd_ingest(paths: list[str]) -> int:
     return 0
 
 
+def _google_adapter(config_path: str | None = None):
+    from .google_drive import GoogleDriveAdapter, build_google_services, default_config_path, load_google_config
+
+    selected = Path(config_path).expanduser() if config_path else default_config_path()
+    config = load_google_config(selected)
+    sheets, docs = build_google_services(writeback_enabled=config.writeback_enabled)
+    return GoogleDriveAdapter(config, sheets, docs)
+
+
+def cmd_ingest_google(*, dry_run: bool = False, config_path: str | None = None) -> int:
+    from .google_drive import GoogleDriveError, ingest_google
+
+    store = TextStrataStore(_root())
+    catalog = _catalog(_root())
+    try:
+        adapter = _google_adapter(config_path)
+        results = ingest_google(store, adapter, dry_run=dry_run, catalog=catalog)
+        for result in results:
+            suffix = f"  {result.get('error')}" if result.get("error") else ""
+            print(f"{result['action']:9s} record={result['record']} doc={result['doc_id']}{suffix}")
+        for error in getattr(adapter, "row_errors", []):
+            print(f"ERROR {error}")
+        return 1 if any(item["action"] == "ERROR" for item in results) else 0
+    except GoogleDriveError as exc:
+        print(str(exc), flush=True)
+        return 1
+    finally:
+        catalog.close()
+
+
+def cmd_google_health(*, config_path: str | None = None) -> int:
+    from .google_drive import health_google
+
+    try:
+        result = health_google(_google_adapter(config_path))
+    except Exception as exc:
+        result = {"ok": False, "code": getattr(exc, "code", "AUTHENTICATION_FAILED"), "error": str(exc)}
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0 if result.get("ok") else 1
+
+
+def _bridge_client(config_path: str | None = None):
+    from .google_bridge import BridgeClient, load_bridge_config
+    return BridgeClient(load_bridge_config(config_path))
+
+
+def cmd_bridge(action: str, *, dry_run: bool = False, config_path: str | None = None) -> int:
+    from .google_bridge import BridgeError, ingest_bridge, mirror_bridge
+    try:
+        client = _bridge_client(config_path)
+        if action == "health":
+            result = client.call("ping")
+            print(f"google-bridge healthy protocol={result['version']}")
+            return 0
+        store = TextStrataStore(_root())
+        if action == "mirror":
+            catalog = None if dry_run else _catalog(_root())
+            try:
+                results = mirror_bridge(store, client, dry_run=dry_run, catalog=catalog)
+            finally:
+                if catalog is not None:
+                    catalog.close()
+        else:
+            catalog = None if dry_run else _catalog(_root())
+            try:
+                results = ingest_bridge(store, client, dry_run=dry_run, catalog=catalog)
+            finally:
+                if catalog is not None:
+                    catalog.close()
+        for result in results:
+            extra = f" ack={result['ack']}" if result.get("ack") else f" error={result['error']}" if result.get("error") else ""
+            print(f"{result['action']} record={result['record']}{extra}")
+        return 1 if any(result["action"] in {"ERROR", "CONFLICT"} or result.get("ack") not in (None, "OK", "PENDING") for result in results) else 0
+    except BridgeError as exc:
+        print(exc.code)
+        return 1
+
+
+def cmd_google_conflict(args: argparse.Namespace) -> int:
+    from .google_bridge import BridgeError, inspect_library_conflict, resolve_library_conflict, save_library_conflict_snapshot
+
+    store = TextStrataStore(_root())
+    catalog = None if args.action == "inspect" else _catalog(_root())
+    try:
+        client = _bridge_client(args.config)
+        if args.action == "inspect":
+            inspected = inspect_library_conflict(store, client, args.item_id)
+            snapshot = save_library_conflict_snapshot(store, inspected)
+            print(json.dumps({**{key: inspected[key] for key in ("id", "local_sha256", "google_fingerprint", "baseline_hash", "doc_id")}, "snapshot": str(snapshot)}, indent=2))
+            return 0
+        if not args.expected_local_sha256 or not args.expected_google_fingerprint or not args.reason:
+            raise ValueError("resolution requires both hashes from inspect and --reason")
+        merged = Path(args.file).read_text(encoding="utf-8") if args.action == "manual_merge" and args.file else None
+        result = resolve_library_conflict(
+            store, client, args.item_id, resolution=args.action,
+            expected_local_sha256=args.expected_local_sha256,
+            expected_google_fingerprint=args.expected_google_fingerprint,
+            reason=args.reason, merged_content=merged, catalog=catalog,
+        )
+        print(json.dumps(result, indent=2))
+        return 0
+    except (BridgeError, ValueError, OSError) as exc:
+        print(exc.code if isinstance(exc, BridgeError) else str(exc))
+        return 1
+    finally:
+        if catalog is not None:
+            catalog.close()
+
+
+def cmd_sources_add(kind: str, *, config_path: str | None = None) -> int:
+    if kind not in {"google-drive", "google-bridge"}:
+        print(f"Unsupported source: {kind}")
+        return 2
+    path = Path(config_path).expanduser() if config_path else Path("config/sources.yaml").resolve()
+    if path.exists():
+        print(f"Source configuration already exists: {path}")
+        return 0
+    path.parent.mkdir(parents=True, exist_ok=True)
+    content = (
+        "google_bridge:\n  endpoint: \"${TEXTSTRATA_GOOGLE_BRIDGE_URL}\"\n"
+        if kind == "google-bridge" else
+        "google_drive:\n  spreadsheet_id: \"${TEXTSTRATA_GOOGLE_MANIFEST_ID}\"\n  worksheet: \"Manifest\"\n  eligible_statuses: [Ready, Updated]\n  writeback:\n    enabled: false\n    success_status: Ingested\n"
+    )
+    path.write_text(content, encoding="utf-8")
+    print(f"Created {path}. Configure its environment variables and run `textstrata sources health {kind}`.")
+    return 0
+
+
 def cmd_retrieval_inspect(query: str, json_output: bool = False, limit: int = 5) -> int:
     """Show the shared retrieval trace without invoking an LLM."""
     store = TextStrataStore(_root())
@@ -123,6 +253,9 @@ def cmd_preview(path: str, json_output: bool = False) -> int:
     p = Path(path)
     item, suggested, fm = build_item(p.read_text(encoding="utf-8"), fallback_id=p.stem)
     result = validate(item)
+    if fm.errors:
+        result.errors.extend(fm.errors)
+        result.ok = False
     policy = classify.suggest_policy(item.type, item.title, item.body)
     payload = {
         "path": str(p),
@@ -191,7 +324,22 @@ def cmd_search(query: str, json_output: bool = False, semantic: bool = False, so
     if semantic:
         return _cmd_search_semantic(query, json_output=json_output)
     cat = _catalog(_root())
-    hits = cat.search(query, sort=sort)
+    from .retrieval import extract_keywords, retrieve
+    from .catalog import SearchHit
+
+    natural_question = sort == "relevance" and ("?" in query or query.lower().startswith(("what ", "how ", "why ", "which ", "where ", "when ", "who ")))
+    if natural_question:
+        result = retrieve(query, cat, TextStrataStore(_root()), limit=10)
+        hits = [SearchHit(id=c.item_id, title=c.title, type=c.type, tags=", ".join(c.tags), snippet=c.chunk[:240]) for c in result.candidates]
+    else:
+        try:
+            hits = cat.search(query, sort=sort)
+        except ValueError:
+            # Preserve explicit FTS queries, but recover from stray punctuation.
+            terms = extract_keywords(query)
+            hits = cat.search(" ".join(f'"{term}"' for term in terms), sort=sort) if terms else []
+            if not hits and terms:
+                hits = cat.search(" OR ".join(f'"{term}"' for term in terms), sort=sort)
     if json_output:
         print(json.dumps([
             {
@@ -1126,8 +1274,33 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--config", metavar="PATH", help="installation JSON path (overrides TEXTSTRATA_CONFIG)")
     sub = p.add_subparsers(dest="command", required=True)
 
-    ingest_p = sub.add_parser("ingest", help="ingest one or more files")
-    ingest_p.add_argument("files", nargs="+", metavar="FILE", help="path to markdown file(s)")
+    ingest_p = sub.add_parser("ingest", help="ingest files or a configured source")
+    ingest_p.add_argument("files", nargs="*", metavar="FILE", help="path to markdown file(s), google, or google-bridge")
+    ingest_p.add_argument("--dry-run", action="store_true", help="inspect a source without changing the workspace")
+    ingest_p.add_argument("--config", metavar="PATH", help="source configuration path")
+
+    sources_p = sub.add_parser("sources", help="configure and inspect external sources")
+    sources_sub = sources_p.add_subparsers(dest="sources_action", required=True)
+    sources_add = sources_sub.add_parser("add", help="create source configuration")
+    sources_add.add_argument("kind", choices=("google-drive", "google-bridge"))
+    sources_add.add_argument("--config", metavar="PATH")
+    sources_health = sources_sub.add_parser("health", help="test source configuration and access")
+    sources_health.add_argument("kind", choices=("google-drive", "google-bridge"))
+    sources_health.add_argument("--config", metavar="PATH")
+
+    mirror_p = sub.add_parser("mirror", help="mirror canonical articles to a configured transport")
+    mirror_p.add_argument("source", choices=("google-bridge",))
+    mirror_p.add_argument("--dry-run", action="store_true")
+    mirror_p.add_argument("--config", metavar="PATH")
+
+    conflict_p = sub.add_parser("google-conflict", help="inspect or explicitly resolve a Library Conflict")
+    conflict_p.add_argument("action", choices=("inspect", "keep_local", "keep_google", "manual_merge"))
+    conflict_p.add_argument("item_id")
+    conflict_p.add_argument("--expected-local-sha256")
+    conflict_p.add_argument("--expected-google-fingerprint")
+    conflict_p.add_argument("--reason")
+    conflict_p.add_argument("--file", help="merged Markdown file for manual_merge")
+    conflict_p.add_argument("--config", metavar="PATH")
 
     vault_import_p = sub.add_parser("vault-import", help="import an Obsidian vault")
     vault_import_p.add_argument("path", metavar="PATH", help="Obsidian vault directory")
@@ -1213,6 +1386,15 @@ def build_parser() -> argparse.ArgumentParser:
     relate_p.add_argument("items", nargs="+", metavar="ITEM_ID", help="two or more item IDs")
     relate_p.add_argument("--model", metavar="MODEL", help="Ollama model name")
 
+    bootstrap_p = sub.add_parser("bootstrap", help="assemble deterministic project context from current articles")
+    bootstrap_p.add_argument("project", help="project slug, for example neoforge")
+    bootstrap_p.add_argument("--json", action="store_true", help="emit structured JSON")
+
+    proposals_p = sub.add_parser("knowledge-proposals", help="review structured article changes")
+    proposals_p.add_argument("action", choices=("list", "show", "apply", "reject"))
+    proposals_p.add_argument("proposal_id", nargs="?")
+    proposals_p.add_argument("--reviewer", help="reviewer identity for apply or reject")
+
     completion_p = sub.add_parser("completion", help="generate shell completions")
     completion_p.add_argument("shell", choices=("bash", "zsh", "fish"), help="shell type")
 
@@ -1292,7 +1474,24 @@ def main(argv: list[str] | None = None) -> int:
         apply_config_environment(config)
 
     if args.command == "ingest":
+        if args.files == ["google-bridge"]:
+            return cmd_bridge("ingest", dry_run=args.dry_run, config_path=args.config)
+        if args.files and args.files[0] == "google":
+            return cmd_ingest_google(dry_run=args.dry_run, config_path=args.config)
+        if not args.files or args.dry_run:
+            parser.error("ingest requires files, or use `ingest google [--dry-run]`")
         return cmd_ingest(args.files)
+    if args.command == "google-conflict":
+        return cmd_google_conflict(args)
+    if args.command == "sources":
+        if args.sources_action == "add":
+            return cmd_sources_add(args.kind, config_path=args.config)
+        if args.sources_action == "health":
+            if args.kind == "google-drive":
+                return cmd_google_health(config_path=args.config)
+            return cmd_bridge("health", config_path=args.config)
+    if args.command == "mirror":
+        return cmd_bridge("mirror", dry_run=args.dry_run, config_path=args.config)
     if args.command == "init":
         return cmd_init()
     if args.command == "doctor":
@@ -1335,6 +1534,35 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_daily(model=getattr(args, "model", None), days=args.days)
     if args.command == "relate":
         return cmd_relate(args.items, model=getattr(args, "model", None))
+    if args.command == "bootstrap":
+        try:
+            context = get_project_context(TextStrataStore(workspace_root), args.project)
+        except ValueError as exc:
+            parser.error(str(exc))
+        print(json.dumps(context, ensure_ascii=False, indent=2) if args.json else render_project_context(context), end="" if not args.json else "\n")
+        return 0
+    if args.command == "knowledge-proposals":
+        from .review import list_pending_agent_proposals
+        store = TextStrataStore(workspace_root)
+        try:
+            if args.action == "list":
+                entries = [entry for entry in list_pending_agent_proposals(store) if entry.get("kind") == "article_change"]
+                for entry in entries:
+                    payload = entry["payload"]
+                    print(f"{entry['proposal_id']} {payload['action']} {payload['item_id']}: {payload['reason']}")
+                return 0
+            if not args.proposal_id:
+                parser.error("proposal_id is required")
+            if args.action == "show":
+                print(json.dumps(article_change_proposal(store, args.proposal_id), ensure_ascii=False, indent=2))
+                return 0
+            if not args.reviewer:
+                parser.error("--reviewer is required for apply or reject")
+            entry = finish_article_change(store, args.proposal_id, apply=args.action == "apply", reviewer=args.reviewer)
+            print(f"{entry['status']} {entry['proposal_id']}")
+            return 0
+        except ValueError as exc:
+            parser.error(str(exc))
     if args.command == "completion":
         return cmd_completion(args.shell)
     if args.command == "watch":
