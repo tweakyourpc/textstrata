@@ -14,7 +14,7 @@ from typing import Any, Sequence
 
 from .store import TextStrataStore
 
-_AGENT_PROPOSAL_KINDS = {"note", "tags", "synonym"}
+_AGENT_PROPOSAL_KINDS = {"note", "tags", "synonym", "article_change"}
 
 
 def _queue_path(store: TextStrataStore) -> str:
@@ -125,24 +125,25 @@ def enqueue_agent_proposal(
         raise ValueError("proposal payload must be between 1 byte and 1 MiB")
     proposal_id = f"{kind}-{hashlib.sha256(canonical.encode('utf-8')).hexdigest()[:16]}"
     path = store.metadata_dir / "agent-proposals.json"
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(data, dict):
+    with store.item_lock("agent-proposals"):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                data = {}
+        except (OSError, json.JSONDecodeError):
             data = {}
-    except (OSError, json.JSONDecodeError):
-        data = {}
-    now = datetime.now(timezone.utc).isoformat()
-    entry = data.get(proposal_id, {})
-    entry.update({
-        "proposal_id": proposal_id,
-        "kind": kind,
-        "payload": payload,
-        "status": entry.get("status", "pending"),
-        "updated_at": now,
-    })
-    entry.setdefault("created_at", now)
-    data[proposal_id] = entry
-    store._atomic_write(path, json.dumps(data, indent=2, sort_keys=True) + "\n")
+        now = datetime.now(timezone.utc).isoformat()
+        entry = data.get(proposal_id, {})
+        entry.update({
+            "proposal_id": proposal_id,
+            "kind": kind,
+            "payload": payload,
+            "status": entry.get("status", "pending"),
+            "updated_at": now,
+        })
+        entry.setdefault("created_at", now)
+        data[proposal_id] = entry
+        store._atomic_write(path, json.dumps(data, indent=2, sort_keys=True) + "\n")
     return entry
 
 

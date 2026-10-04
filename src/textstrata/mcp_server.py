@@ -19,6 +19,7 @@ from .catalog import Catalog
 from .context import get_project_context
 from .control import backup_preview, backup_workspace, control_doctor, load_config, load_effective_config, restore_preview, restore_workspace
 from .ingest import build_item, ingest_text
+from .knowledge_changes import propose_article_change
 from .models import TextStrataItem
 from .presentation import PAPER_SKIN, RenderContext, render_item_html, render_text
 from .retrieval import retrieve
@@ -759,6 +760,21 @@ class TextStrataMCP:
                 },
             },
             {
+                "name": "propose_article_change",
+                "description": "Queue a validated new or updated canonical article with a content-hash precondition for explicit review.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["create", "update"]},
+                        "content": {"type": "string"},
+                        "reason": {"type": "string"},
+                        "source_ids": {"type": "array", "items": {"type": "string"}},
+                    },
+                    "required": ["action", "content", "reason"],
+                    "additionalProperties": False,
+                },
+            },
+            {
                 "name": "propose_note",
                 "description": "Queue a new note draft for human review without publishing it.",
                 "inputSchema": {
@@ -1185,6 +1201,19 @@ class TextStrataMCP:
                 "source_ids": sorted({str(item_id).strip() for item_id in arguments.get("source_ids", []) if str(item_id).strip()}),
             })
             return {"content": [{"type": "text", "text": f"queued note proposal {entry['proposal_id']}"}]}
+
+        if name == "propose_article_change":
+            try:
+                entry = propose_article_change(
+                    self.store,
+                    str(arguments.get("action", "")),
+                    str(arguments.get("content", "")),
+                    str(arguments.get("reason", "")),
+                    arguments.get("source_ids", []),
+                )
+            except ValueError as exc:
+                return {"isError": True, "content": [{"type": "text", "text": str(exc)}]}
+            return {"content": [{"type": "text", "text": f"queued article change {entry['proposal_id']}"}]}
 
         if name == "propose_tags":
             item_id = str(arguments.get("item_id", "")).strip()

@@ -18,6 +18,7 @@ from .catalog import Catalog
 from .context import get_project_context, render_project_context
 from .control import backup_workspace, control_doctor, load_config, load_effective_config, process_approved_ingest, restore_preview, restore_workspace
 from .ingest import _update_file, build_item, ingest_file
+from .knowledge_changes import article_change_proposal, finish_article_change
 from .linking import build_links, links_for
 from .presentation import PAPER_SKIN, RenderContext, render_item_html, render_text
 from .research import daily_briefing, relate, research, synthesize
@@ -1094,6 +1095,11 @@ def build_parser() -> argparse.ArgumentParser:
     bootstrap_p.add_argument("project", help="project slug, for example neoforge")
     bootstrap_p.add_argument("--json", action="store_true", help="emit structured JSON")
 
+    proposals_p = sub.add_parser("knowledge-proposals", help="review structured article changes")
+    proposals_p.add_argument("action", choices=("list", "show", "apply", "reject"))
+    proposals_p.add_argument("proposal_id", nargs="?")
+    proposals_p.add_argument("--reviewer", help="reviewer identity for apply or reject")
+
     completion_p = sub.add_parser("completion", help="generate shell completions")
     completion_p.add_argument("shell", choices=("bash", "zsh", "fish"), help="shell type")
 
@@ -1175,6 +1181,28 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(str(exc))
         print(json.dumps(context, ensure_ascii=False, indent=2) if args.json else render_project_context(context), end="" if not args.json else "\n")
         return 0
+    if args.command == "knowledge-proposals":
+        from .review import list_pending_agent_proposals
+        store = TextStrataStore(workspace_root)
+        try:
+            if args.action == "list":
+                entries = [entry for entry in list_pending_agent_proposals(store) if entry.get("kind") == "article_change"]
+                for entry in entries:
+                    payload = entry["payload"]
+                    print(f"{entry['proposal_id']} {payload['action']} {payload['item_id']}: {payload['reason']}")
+                return 0
+            if not args.proposal_id:
+                parser.error("proposal_id is required")
+            if args.action == "show":
+                print(json.dumps(article_change_proposal(store, args.proposal_id), ensure_ascii=False, indent=2))
+                return 0
+            if not args.reviewer:
+                parser.error("--reviewer is required for apply or reject")
+            entry = finish_article_change(store, args.proposal_id, apply=args.action == "apply", reviewer=args.reviewer)
+            print(f"{entry['status']} {entry['proposal_id']}")
+            return 0
+        except ValueError as exc:
+            parser.error(str(exc))
     if args.command == "completion":
         return cmd_completion(args.shell)
     if args.command == "watch":
