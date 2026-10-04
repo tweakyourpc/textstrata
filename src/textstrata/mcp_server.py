@@ -870,6 +870,9 @@ class TextStrataMCP:
             path = Path(arguments["path"])
             item, suggested, fm = build_item(path.read_text(encoding="utf-8"), fallback_id=arguments.get("fallback_id") or path.stem)
             v = validate(item)
+            if fm.errors:
+                v.errors.extend(fm.errors)
+                v.ok = False
             policy = classify.suggest_policy(item.type, item.title, item.body)
             ctx = RenderContext(
                 title=item.title,

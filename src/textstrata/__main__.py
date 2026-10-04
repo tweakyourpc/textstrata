@@ -121,6 +121,9 @@ def cmd_preview(path: str, json_output: bool = False) -> int:
     p = Path(path)
     item, suggested, fm = build_item(p.read_text(encoding="utf-8"), fallback_id=p.stem)
     result = validate(item)
+    if fm.errors:
+        result.errors.extend(fm.errors)
+        result.ok = False
     policy = classify.suggest_policy(item.type, item.title, item.body)
     payload = {
         "path": str(p),

@@ -30,6 +30,9 @@ def propose_article_change(
         raise ValueError("reason is required")
     item, _, parsed = build_item(content)
     result = validate(item, parsed.conflicts)
+    if parsed.errors:
+        result.errors.extend(parsed.errors)
+        result.ok = False
     if not result.ok:
         raise ValueError("invalid article: " + "; ".join(result.errors))
     if not item.provenance.contributor_chain:
@@ -89,7 +92,7 @@ def finish_article_change(store: TextStrataStore, proposal_id: str, *, apply: bo
             if (None if path is None else _digest(path)) != expected:
                 raise ValueError("article changed since proposal; review a new proposal")
             item, _, parsed = build_item(payload["content"])
-            if item.id != item_id or not validate(item, parsed.conflicts).ok:
+            if item.id != item_id or parsed.errors or not validate(item, parsed.conflicts).ok:
                 raise ValueError("proposal content is no longer valid")
             result = ingest_text(store, payload["content"]) if payload["action"] == "create" else _update_text(store, payload["content"], fallback_id=item_id)
             if not result.published:

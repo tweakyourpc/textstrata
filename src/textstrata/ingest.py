@@ -212,6 +212,9 @@ def _validate_and_publish(
 ) -> IngestResult:
     """Validate and publish an already-built item without replacing an original."""
     result = validate(item, diagnostics=frontmatter_result.conflicts)
+    if frontmatter_result.errors:
+        result.errors.extend(frontmatter_result.errors)
+        result.ok = False
     normalized_path = None
     published = False
     if result.ok:
