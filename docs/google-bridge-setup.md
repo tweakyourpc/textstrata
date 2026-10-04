@@ -104,7 +104,35 @@ per-item status fallback; deploy the current script to get the faster pass.
 
 Edit the existing Library Google Doc. Keep its `TextStrata ID`, `Origin: textstrata-library`, and canonical Markdown frontmatter intact; in particular, do not change the frontmatter `id` or provenance. Edit Title, Topic, and Tags in the **Library** index row; that row is authoritative for those fields. Leave `ID`, `Doc ID`, `Hash`, and `Source` unchanged. Set only that Library row's `Status` to `Updated` after all Doc and row edits are saved. Do not change the Inbox `Manifest` for an existing Library article.
 
-On the next scheduled mirror pass, TextStrata reads only `Updated` Library rows, checks the indexed Doc still belongs to the Library folder, and compares the local article to the Library row's last-mirrored hash. If the local article is unchanged, the revision is imported, the canonical local article is re-mirrored, and the row returns to `Active`. If local and Google both changed, the row becomes `Conflict`; neither copy is overwritten. Resolve a conflict deliberately before setting it back to `Updated`. Dry run reports `IMPORT`, `RETRY`, or `CONFLICT` without changing local files or Google. A failed final Google acknowledgment is retried without re-publishing the same local content.
+On the next scheduled mirror pass, TextStrata reads only `Updated` Library rows, checks the indexed Doc still belongs to the Library folder, and compares the local article to the Library row's last-mirrored hash. If the local article is unchanged, the revision is imported, the canonical local article is re-mirrored, and the row returns to `Active`. If local and Google both changed, the row becomes `Conflict`; neither copy is overwritten. Resolve it through the explicit operation below. Dry run reports `IMPORT`, `RETRY`, or `CONFLICT` without changing local files or Google. A failed final Google acknowledgment is retried without re-publishing the same local content.
+
+### Explicit Conflict resolution
+
+Do not change a `Conflict` row's status by hand. Inspect both versions first:
+
+```bash
+textstrata google-conflict inspect ARTICLE_ID
+```
+
+The command prints the local SHA-256, Google document fingerprint, baseline
+hash, and Doc ID. It also saves both exact copies under the local workspace's
+`.fabric/google-conflicts/ARTICLE_ID/` directory for review. Choose one of:
+
+- `keep_local`: publish the reviewed local article back to the Library Doc.
+- `keep_google`: validate and publish the reviewed Google article locally, then
+  update the Library Doc and index.
+- `manual_merge`: edit a Markdown copy that retains the article ID, frontmatter,
+  provenance, and useful facts from both sides, then supply it with `--file`.
+  This also covers a metadata-only merge when that is the reviewed intent.
+
+For any choice, run `textstrata google-conflict CHOICE ARTICLE_ID` with
+`--expected-local-sha256`, `--expected-google-fingerprint`, and `--reason`.
+Use the exact values from `inspect`. The operation rechecks both versions
+under the local item lock and the Apps Script lock, preserves both copies and
+an audit record locally, and returns the row to `Active` only after a guarded
+Google write. If either side changed since inspection, inspect again. The
+baseline hash alone does not provide a reconstructable common ancestor for
+all existing records, so no automatic three-way winner is inferred.
 
 ChatGPT-facing instruction to place in the Google editing workflow:
 
@@ -120,7 +148,7 @@ version\naction\ntimestamp\nnonce\npayload_json
 
 The client serializes `payload_json` with sorted keys and compact separators. The server signs the exact transmitted `payload_json` string before parsing it, avoiding cross-language serialization drift. The server accepts the current secret and an optional previous secret during rotation. It rejects stale/future timestamps, reused nonces, malformed payloads, invalid signatures, and unknown actions. Nonces are stored in Apps Script `CacheService` under `LockService` for the configured TTL. The shared synthetic vector is in `tests/fixtures/google_bridge_vector.json`.
 
-`fetch_source` accepts a manifest ID and expected Doc ID; the server resolves and checks the actual Doc ID from the configured manifest and verifies the file is in Inbox and not Library. `ack` rechecks the row under a lock and writes only three named cells. `mirror_upsert` accepts a TextStrata article ID and canonical content, but no destination Doc ID; the destination is resolved from the Library index and verified in the Library folder. `fetch_library_revision` can read only an `Updated` Library index row and its matching Doc; `complete_library_import` rechecks the row, Doc, old hash, and document fingerprint before returning it to `Active`. Ordinary mirroring refuses pending and conflicted Library rows. There is no delete, arbitrary Drive read, arbitrary Sheet range, sharing, or script execution action.
+`fetch_source` accepts a manifest ID and expected Doc ID; the server resolves and checks the actual Doc ID from the configured manifest and verifies the file is in Inbox and not Library. `ack` rechecks the row under a lock and writes only three named cells. `mirror_upsert` accepts a TextStrata article ID and canonical content, but no destination Doc ID; the destination is resolved from the Library index and verified in the Library folder. `fetch_library_revision` can read only an `Updated` Library index row and its matching Doc; `complete_library_import` rechecks the row, Doc, old hash, and document fingerprint before returning it to `Active`. `fetch_library_conflict` and `resolve_library_conflict` require a `Conflict` row and the indexed Doc ID, baseline hash, and document fingerprint. Ordinary mirroring refuses pending and conflicted Library rows. There is no delete, arbitrary Drive read, arbitrary Sheet range, sharing, or script execution action.
 
 For a 15-minute production interval on Linux, use the included wrapper from
 cron. It loads the private environment file, uses a state-directory lock to

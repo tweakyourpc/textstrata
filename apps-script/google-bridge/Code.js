@@ -2,7 +2,7 @@
 const BRIDGE_VERSION = 1;
 const INBOX_HEADERS = ['ID', 'Status', 'Doc ID'];
 const LIBRARY_HEADERS = ['ID', 'Title', 'Doc ID', 'Hash', 'Updated', 'Topic', 'Tags', 'Source', 'Status'];
-const ACTIONS = ['ping', 'list_ready', 'fetch_source', 'ack', 'mirror_status', 'list_library_status', 'mirror_upsert', 'list_library_updates', 'fetch_library_revision', 'complete_library_import', 'mark_library_conflict'];
+const ACTIONS = ['ping', 'list_ready', 'fetch_source', 'ack', 'mirror_status', 'list_library_status', 'mirror_upsert', 'list_library_updates', 'fetch_library_revision', 'fetch_library_conflict', 'complete_library_import', 'mark_library_conflict', 'resolve_library_conflict'];
 
 function error_(code) { throw new Error(code); }
 function property_(name) {
@@ -74,8 +74,10 @@ function dispatch_(action, payload) {
   if (action === 'mirror_upsert') return mirrorUpsert_(payload);
   if (action === 'list_library_updates') return {records: listLibraryUpdates_()};
   if (action === 'fetch_library_revision') return {record: fetchLibraryRevision_(payload)};
+  if (action === 'fetch_library_conflict') return {record: fetchLibraryConflict_(payload)};
   if (action === 'complete_library_import') return completeLibraryImport_(payload);
   if (action === 'mark_library_conflict') return markLibraryConflict_(payload);
+  if (action === 'resolve_library_conflict') return resolveLibraryConflict_(payload);
   error_('UNKNOWN_ACTION');
 }
 function manifestSheet_() {
@@ -176,11 +178,11 @@ function listLibraryStatus_(payload) {
     return {id: id, doc_id: docId, hash: String(row.Hash), status: String(row.Status)};
   });
 }
-function libraryRevisionRow_(payload) {
+function libraryRevisionRow_(payload, expectedStatus) {
   if (Object.keys(payload).some(function (key) { return ['id', 'expected_doc_id', 'expected_hash', 'expected_fingerprint'].indexOf(key) < 0; })) error_('INVALID_PAYLOAD');
   const row = matchingRow_(table_(librarySheet_(), LIBRARY_HEADERS), payload.id);
   if (!row) error_('RECORD_NOT_FOUND');
-  if (String(row.Status).trim().toLowerCase() !== 'updated') error_('LIBRARY_NOT_UPDATED');
+  if (String(row.Status).trim().toLowerCase() !== (expectedStatus || 'updated')) error_('LIBRARY_NOT_UPDATED');
   if (String(row['Doc ID']).trim() !== String(payload.expected_doc_id || '')) error_('SOURCE_MISMATCH');
   if (!/^[a-f0-9]{64}$/.test(String(row.Hash)) || String(row.Hash) !== String(payload.expected_hash || '')) error_('LIBRARY_REVISION_CHANGED');
   const file = DriveApp.getFileById(String(row['Doc ID']));
@@ -221,11 +223,13 @@ function libraryBody_(document, id) {
   }
   return parts.join('\n').replace(/\n*$/, '') + '\n';
 }
-function fetchLibraryRevision_(payload) {
-  const row = libraryRevisionRow_(payload);
+function readLibraryRevision_(payload, expectedStatus) {
+  const row = libraryRevisionRow_(payload, expectedStatus);
   const document = DocumentApp.openById(String(row['Doc ID']));
-  return {id: String(row.ID), doc_id: String(row['Doc ID']), hash: String(row.Hash), fingerprint: docFingerprint_(document), content: libraryBody_(document, String(row.ID)), title: String(row.Title || ''), topic: String(row.Topic || ''), tags: String(row.Tags || ''), source: String(row.Source || ''), status: 'Updated'};
+  return {id: String(row.ID), doc_id: String(row['Doc ID']), hash: String(row.Hash), fingerprint: docFingerprint_(document), content: libraryBody_(document, String(row.ID)), title: String(row.Title || ''), topic: String(row.Topic || ''), tags: String(row.Tags || ''), source: String(row.Source || ''), status: expectedStatus === 'conflict' ? 'Conflict' : 'Updated'};
 }
+function fetchLibraryRevision_(payload) { return readLibraryRevision_(payload, 'updated'); }
+function fetchLibraryConflict_(payload) { return readLibraryRevision_(payload, 'conflict'); }
 function markLibraryConflict_(payload) {
   const lock = LockService.getScriptLock();
   lock.waitLock(10000);
@@ -247,6 +251,28 @@ function completeLibraryImport_(payload) {
   lock.waitLock(10000);
   try {
     const row = libraryRevisionRow_({id: payload.id, expected_doc_id: payload.expected_doc_id, expected_hash: payload.expected_hash, expected_fingerprint: payload.expected_fingerprint});
+    const document = DocumentApp.openById(String(row['Doc ID']));
+    if (docFingerprint_(document) !== payload.expected_fingerprint) error_('LIBRARY_REVISION_CHANGED');
+    writeArticle_(document, payload);
+    const table = table_(librarySheet_(), LIBRARY_HEADERS);
+    const values = {Title: payload.title, Hash: payload.hash, Updated: new Date().toISOString(), Topic: String(payload.topic || ''), Tags: payload.tags.join(', '), Source: String(payload.source || ''), Status: 'Active'};
+    Object.keys(values).forEach(function (name) { table.sheet.getRange(row.row, table.headers.indexOf(name) + 1).setValue(values[name]); });
+    return {status: 'Active', doc_id: String(row['Doc ID']), hash: payload.hash};
+  } finally { lock.releaseLock(); }
+}
+function resolveLibraryConflict_(payload) {
+  const allowed = ['id', 'expected_doc_id', 'expected_hash', 'expected_fingerprint', 'title', 'content', 'hash', 'updated', 'topic', 'tags', 'source', 'resolution', 'reason'];
+  if (Object.keys(payload).some(function (key) { return allowed.indexOf(key) < 0; }) ||
+      ['keep_local', 'keep_google', 'manual_merge'].indexOf(payload.resolution) < 0 ||
+      typeof payload.reason !== 'string' || !payload.reason.trim() ||
+      typeof payload.content !== 'string' || typeof payload.title !== 'string' ||
+      !Array.isArray(payload.tags) || !/^[a-f0-9]{64}$/.test(String(payload.hash))) error_('INVALID_PAYLOAD');
+  const actual = hex_(Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, payload.content, Utilities.Charset.UTF_8));
+  if (!constantEqual_(actual, payload.hash)) error_('HASH_MISMATCH');
+  const lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  try {
+    const row = libraryRevisionRow_({id: payload.id, expected_doc_id: payload.expected_doc_id, expected_hash: payload.expected_hash, expected_fingerprint: payload.expected_fingerprint}, 'conflict');
     const document = DocumentApp.openById(String(row['Doc ID']));
     if (docFingerprint_(document) !== payload.expected_fingerprint) error_('LIBRARY_REVISION_CHANGED');
     writeArticle_(document, payload);

@@ -23,6 +23,7 @@ from .google_drive import _load_state, _markdown, _save_state, _substitute, defa
 from .ingest import _update_text, ingest_text, build_item
 from .sources import NormalizedSourceRecord, normalize_text
 from .store import TextStrataStore
+from .validate import validate
 
 PROTOCOL_VERSION = 1
 
@@ -86,7 +87,7 @@ class BridgeClient:
             action = json.loads(body).get("action")
         except (ValueError, AttributeError):
             action = None
-        timeout = 300 if action in {"mirror_upsert", "complete_library_import", "fetch_library_revision", "list_library_status"} else 45
+        timeout = 300 if action in {"mirror_upsert", "complete_library_import", "fetch_library_revision", "fetch_library_conflict", "resolve_library_conflict", "list_library_status"} else 45
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 result = json.loads(response.read(4 * 1024 * 1024).decode("utf-8"))
@@ -97,7 +98,7 @@ class BridgeClient:
         return result
 
     def call(self, action: str, payload: Mapping[str, Any] | None = None) -> dict[str, Any]:
-        if action not in {"ping", "list_ready", "fetch_source", "ack", "mirror_status", "list_library_status", "mirror_upsert", "list_library_updates", "fetch_library_revision", "complete_library_import", "mark_library_conflict"}:
+        if action not in {"ping", "list_ready", "fetch_source", "ack", "mirror_status", "list_library_status", "mirror_upsert", "list_library_updates", "fetch_library_revision", "fetch_library_conflict", "complete_library_import", "mark_library_conflict", "resolve_library_conflict"}:
             raise BridgeError("UNKNOWN_ACTION")
         envelope = signed_envelope(action, payload or {}, self.config.secret)
         body = json.dumps(envelope, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -180,6 +181,123 @@ def _library_revision(remote: Mapping[str, Any], item_id: str) -> tuple[str, Any
         raise BridgeError("LIBRARY_CONFLICT")
     canonical = normalize_text(frontmatter.render(item.canonical_frontmatter(), item.body))
     return raw, (canonical, item)
+
+
+def inspect_library_conflict(store: TextStrataStore, client: BridgeClient, item_id: str) -> dict[str, Any]:
+    """Read both sides of a Conflict without selecting a winner."""
+    path = store.normalized_path_for_id(item_id)
+    if path is None:
+        raise BridgeError("LOCAL_DOCUMENT_ERROR")
+    status = client.call("mirror_status", {"id": item_id}).get("record")
+    if not isinstance(status, dict) or status.get("status") != "Conflict":
+        raise BridgeError("LIBRARY_NOT_CONFLICT")
+    expected = {"id": item_id, "expected_doc_id": status.get("doc_id"), "expected_hash": status.get("hash")}
+    remote = client.call("fetch_library_conflict", expected).get("record")
+    if not isinstance(remote, dict) or remote.get("id") != item_id or remote.get("doc_id") != expected["expected_doc_id"] or remote.get("hash") != expected["expected_hash"] or not re.fullmatch(r"[a-f0-9]{64}", str(remote.get("fingerprint", ""))) or not isinstance(remote.get("content"), str):
+        raise BridgeError("INVALID_RESPONSE")
+    local = normalize_text(path.read_text(encoding="utf-8"))
+    return {
+        "id": item_id,
+        "local_sha256": hashlib.sha256(local.encode("utf-8")).hexdigest(),
+        "google_fingerprint": remote["fingerprint"],
+        "baseline_hash": status["hash"],
+        "doc_id": status["doc_id"],
+        "local_content": local,
+        "google_content": remote["content"],
+        "google_record": remote,
+    }
+
+
+def _conflict_snapshot(store: TextStrataStore, inspection: Mapping[str, Any], resolution: str, reason: str) -> Path:
+    directory = store.metadata_dir / "google-conflicts" / str(inspection["id"])
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    prefix = directory / stamp
+    store._atomic_write(prefix.with_suffix(".local.md"), str(inspection["local_content"]))
+    store._atomic_write(prefix.with_suffix(".google.md"), str(inspection["google_content"]))
+    store._atomic_write(prefix.with_suffix(".json"), json.dumps({
+        "id": inspection["id"], "local_sha256": inspection["local_sha256"],
+        "google_fingerprint": inspection["google_fingerprint"],
+        "baseline_hash": inspection["baseline_hash"], "doc_id": inspection["doc_id"],
+        "resolution": resolution, "reason": reason,
+    }, ensure_ascii=False, sort_keys=True, indent=2) + "\n")
+    return prefix
+
+
+def save_library_conflict_snapshot(store: TextStrataStore, inspection: Mapping[str, Any]) -> Path:
+    """Save reviewable local and Google copies without changing either side."""
+    return _conflict_snapshot(store, inspection, "inspect", "review copies before resolution")
+
+
+def resolve_library_conflict(
+    store: TextStrataStore, client: BridgeClient, item_id: str, *, resolution: str,
+    expected_local_sha256: str, expected_google_fingerprint: str, reason: str,
+    merged_content: str | None = None, catalog: Any | None = None,
+) -> dict[str, str]:
+    """Resolve by explicit choice after preserving both copies locally."""
+    if resolution not in {"keep_local", "keep_google", "manual_merge"} or not reason.strip():
+        raise ValueError("resolution and reason are required")
+    if resolution == "manual_merge" and not merged_content:
+        raise ValueError("manual_merge requires merged Markdown")
+    with store.item_lock(item_id):
+        inspected = inspect_library_conflict(store, client, item_id)
+        if inspected["local_sha256"] != expected_local_sha256 or inspected["google_fingerprint"] != expected_google_fingerprint:
+            raise BridgeError("LIBRARY_REVISION_CHANGED")
+        remote = inspected["google_record"]
+        if resolution == "keep_local":
+            chosen = inspected["local_content"]
+            item, _, fm = build_item(chosen, fallback_id=item_id)
+        elif resolution == "keep_google":
+            remote_header = re.match(r"\A---\n(.*?)\n---\n", str(remote["content"]), re.DOTALL)
+            try:
+                raw_header = yaml.safe_load(remote_header.group(1)) if remote_header else None
+            except yaml.YAMLError as exc:
+                raise BridgeError("VALIDATION_FAILED") from exc
+            if not isinstance(raw_header, dict):
+                raise BridgeError("VALIDATION_FAILED")
+            chosen, _ = _library_revision(remote, item_id)
+            item, _, fm = build_item(chosen, fallback_id=item_id)
+        else:
+            chosen = str(merged_content)
+            item, _, fm = build_item(chosen, fallback_id=item_id)
+        header = re.match(r"\A---\n(.*?)\n---\n", chosen, re.DOTALL)
+        try:
+            parsed_header = yaml.safe_load(header.group(1)) if header else None
+        except yaml.YAMLError as exc:
+            raise BridgeError("VALIDATION_FAILED") from exc
+        if not isinstance(parsed_header, dict):
+            raise BridgeError("VALIDATION_FAILED")
+        valid = validate(item, fm.conflicts)
+        if item.id != item_id or fm.block_count != 1 or not valid.ok:
+            raise BridgeError("VALIDATION_FAILED")
+        snapshot = _conflict_snapshot(store, inspected, resolution, reason.strip())
+        if resolution != "keep_local":
+            published = _update_text(store, chosen, fallback_id=item_id)
+            if not published.published:
+                raise BridgeError("VALIDATION_FAILED")
+            if catalog is not None:
+                catalog.index_item(published.item)
+            path = store.normalized_path_for_id(item_id)
+            if path is None:
+                raise BridgeError("LOCAL_DOCUMENT_ERROR")
+            chosen = normalize_text(path.read_text(encoding="utf-8"))
+            item, _, _ = build_item(chosen, fallback_id=item_id)
+        canonical = normalize_text(chosen)
+        digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        payload = {
+            "id": item_id, "expected_doc_id": inspected["doc_id"],
+            "expected_hash": inspected["baseline_hash"],
+            "expected_fingerprint": inspected["google_fingerprint"],
+            "title": item.title, "content": canonical, "hash": digest,
+            "updated": datetime.now(timezone.utc).isoformat(),
+            "topic": str(item.extra.get("topic") or ""), "tags": item.tags,
+            "source": str(item.provenance.source_kind or remote.get("source") or "local"),
+            "resolution": resolution, "reason": reason.strip(),
+        }
+        result = client.call("resolve_library_conflict", payload)
+        if result.get("status") != "Active" or result.get("hash") != digest:
+            raise BridgeError("INVALID_RESPONSE")
+        return {"id": item_id, "status": "Active", "hash": digest, "snapshot": str(snapshot)}
 
 
 def import_library_bridge(store: TextStrataStore, client: BridgeClient, *, dry_run: bool = False, catalog: Any | None = None) -> list[dict[str, str]]:

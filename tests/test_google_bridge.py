@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from textstrata.google_bridge import BridgeClient, BridgeConfig, BridgeError, ingest_bridge, mirror_bridge, signed_envelope
+from textstrata.google_bridge import BridgeClient, BridgeConfig, BridgeError, ingest_bridge, inspect_library_conflict, mirror_bridge, resolve_library_conflict, signed_envelope
 from textstrata.store import TextStrataStore
 
 
@@ -45,6 +45,10 @@ class FakeBridge:
             return {"records": [{"id": key, "doc_id": value["doc_id"], "hash": value["hash"]} for key, value in self.library.items() if value.get("status") == "Updated"]}
         if action == "fetch_library_revision":
             return {"record": self.revisions[payload["id"]]}
+        if action == "fetch_library_conflict":
+            if self.library[payload["id"]]["status"] != "Conflict":
+                raise BridgeError("LIBRARY_NOT_UPDATED")
+            return {"record": {**self.revisions[payload["id"]], "status": "Conflict"}}
         if action == "mark_library_conflict":
             self.library[payload["id"]]["status"] = "Conflict"
             return {"status": "Conflict"}
@@ -53,6 +57,12 @@ class FakeBridge:
                 raise BridgeError("BRIDGE_UNAVAILABLE")
             self.library[payload["id"]].update({"hash": payload["hash"], "status": "Active"})
             return {"status": "Active"}
+        if action == "resolve_library_conflict":
+            row = self.library[payload["id"]]
+            if row["status"] != "Conflict" or row["hash"] != payload["expected_hash"] or self.revisions[payload["id"]]["fingerprint"] != payload["expected_fingerprint"]:
+                raise BridgeError("LIBRARY_REVISION_CHANGED")
+            row.update({"hash": payload["hash"], "status": "Active"})
+            return {"status": "Active", "hash": payload["hash"]}
         if action == "mirror_upsert":
             self.library[payload["id"]] = {"id": payload["id"], "doc_id": "syntheticLibraryDoc_123", "hash": payload["hash"], "status": "Active"}
             return {"action": "CREATE"}
@@ -192,6 +202,48 @@ class BridgeTests(unittest.TestCase):
             self.assertEqual(bridge.library["ts-example-001"]["status"], "Conflict")
             self.assertIn("Local edit", path.read_text())
             self.assertFalse(any(action in {"mirror_upsert", "complete_library_import"} for action, _ in bridge.calls[before:]))
+
+    def test_explicit_keep_local_preserves_both_copies_before_resolution(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = TextStrataStore(temp)
+            ingest_bridge(store, FakeBridge())
+            bridge = FakeBridge()
+            mirror_bridge(store, bridge)
+            path = store.normalized_paths()[0]
+            baseline = bridge.library["ts-example-001"]["hash"]
+            original = path.read_text()
+            path.write_text(original + "\nLocal edit\n")
+            bridge.library["ts-example-001"]["status"] = "Conflict"
+            bridge.revisions["ts-example-001"] = {"id": "ts-example-001", "doc_id": "syntheticLibraryDoc_123", "hash": baseline, "fingerprint": "f" * 64, "content": original, "title": "Remote title", "topic": "", "tags": "sample", "source": "local"}
+            inspected = inspect_library_conflict(store, bridge, "ts-example-001")
+            result = resolve_library_conflict(store, bridge, "ts-example-001", resolution="keep_local", expected_local_sha256=inspected["local_sha256"], expected_google_fingerprint=inspected["google_fingerprint"], reason="local change wins after review")
+            self.assertEqual(result["status"], "Active")
+            self.assertTrue(Path(result["snapshot"] + ".local.md").exists())
+            self.assertTrue(Path(result["snapshot"] + ".google.md").exists())
+            self.assertIn("Local edit", path.read_text())
+            self.assertEqual(bridge.library["ts-example-001"]["status"], "Active")
+
+    def test_explicit_keep_google_and_stale_local_precondition(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = TextStrataStore(temp)
+            ingest_bridge(store, FakeBridge())
+            bridge = FakeBridge()
+            mirror_bridge(store, bridge)
+            path = store.normalized_paths()[0]
+            baseline = bridge.library["ts-example-001"]["hash"]
+            original = path.read_text()
+            path.write_text(original + "\nLocal edit\n")
+            bridge.library["ts-example-001"]["status"] = "Conflict"
+            bridge.revisions["ts-example-001"] = {"id": "ts-example-001", "doc_id": "syntheticLibraryDoc_123", "hash": baseline, "fingerprint": "f" * 64, "content": original, "title": "Remote title", "topic": "", "tags": "sample", "source": "local"}
+            inspected = inspect_library_conflict(store, bridge, "ts-example-001")
+            path.write_text(path.read_text() + "\nNewer local edit\n")
+            with self.assertRaisesRegex(BridgeError, "LIBRARY_REVISION_CHANGED"):
+                resolve_library_conflict(store, bridge, "ts-example-001", resolution="keep_google", expected_local_sha256=inspected["local_sha256"], expected_google_fingerprint=inspected["google_fingerprint"], reason="reviewed Google copy")
+            self.assertEqual(bridge.library["ts-example-001"]["status"], "Conflict")
+            current = inspect_library_conflict(store, bridge, "ts-example-001")
+            result = resolve_library_conflict(store, bridge, "ts-example-001", resolution="keep_google", expected_local_sha256=current["local_sha256"], expected_google_fingerprint=current["google_fingerprint"], reason="reviewed Google copy")
+            self.assertEqual(result["status"], "Active")
+            self.assertIn("Remote title", path.read_text())
 
     def test_library_import_completion_retries_without_republishing(self):
         with tempfile.TemporaryDirectory() as temp:

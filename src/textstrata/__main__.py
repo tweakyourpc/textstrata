@@ -155,6 +155,37 @@ def cmd_bridge(action: str, *, dry_run: bool = False, config_path: str | None = 
         return 1
 
 
+def cmd_google_conflict(args: argparse.Namespace) -> int:
+    from .google_bridge import BridgeError, inspect_library_conflict, resolve_library_conflict, save_library_conflict_snapshot
+
+    store = TextStrataStore(_root())
+    catalog = None if args.action == "inspect" else _catalog(_root())
+    try:
+        client = _bridge_client(args.config)
+        if args.action == "inspect":
+            inspected = inspect_library_conflict(store, client, args.item_id)
+            snapshot = save_library_conflict_snapshot(store, inspected)
+            print(json.dumps({**{key: inspected[key] for key in ("id", "local_sha256", "google_fingerprint", "baseline_hash", "doc_id")}, "snapshot": str(snapshot)}, indent=2))
+            return 0
+        if not args.expected_local_sha256 or not args.expected_google_fingerprint or not args.reason:
+            raise ValueError("resolution requires both hashes from inspect and --reason")
+        merged = Path(args.file).read_text(encoding="utf-8") if args.action == "manual_merge" and args.file else None
+        result = resolve_library_conflict(
+            store, client, args.item_id, resolution=args.action,
+            expected_local_sha256=args.expected_local_sha256,
+            expected_google_fingerprint=args.expected_google_fingerprint,
+            reason=args.reason, merged_content=merged, catalog=catalog,
+        )
+        print(json.dumps(result, indent=2))
+        return 0
+    except (BridgeError, ValueError, OSError) as exc:
+        print(exc.code if isinstance(exc, BridgeError) else str(exc))
+        return 1
+    finally:
+        if catalog is not None:
+            catalog.close()
+
+
 def cmd_sources_add(kind: str, *, config_path: str | None = None) -> int:
     if kind not in {"google-drive", "google-bridge"}:
         print(f"Unsupported source: {kind}")
@@ -1118,6 +1149,15 @@ def build_parser() -> argparse.ArgumentParser:
     mirror_p.add_argument("--dry-run", action="store_true")
     mirror_p.add_argument("--config", metavar="PATH")
 
+    conflict_p = sub.add_parser("google-conflict", help="inspect or explicitly resolve a Library Conflict")
+    conflict_p.add_argument("action", choices=("inspect", "keep_local", "keep_google", "manual_merge"))
+    conflict_p.add_argument("item_id")
+    conflict_p.add_argument("--expected-local-sha256")
+    conflict_p.add_argument("--expected-google-fingerprint")
+    conflict_p.add_argument("--reason")
+    conflict_p.add_argument("--file", help="merged Markdown file for manual_merge")
+    conflict_p.add_argument("--config", metavar="PATH")
+
     vault_import_p = sub.add_parser("vault-import", help="import an Obsidian vault")
     vault_import_p.add_argument("path", metavar="PATH", help="Obsidian vault directory")
     vault_import_p.add_argument("--overwrite", action="store_true", help="replace existing imported item IDs")
@@ -1240,6 +1280,8 @@ def main(argv: list[str] | None = None) -> int:
         if not args.files or args.dry_run:
             parser.error("ingest requires files, or use `ingest google [--dry-run]`")
         return cmd_ingest(args.files)
+    if args.command == "google-conflict":
+        return cmd_google_conflict(args)
     if args.command == "sources":
         if args.sources_action == "add":
             return cmd_sources_add(args.kind, config_path=args.config)
