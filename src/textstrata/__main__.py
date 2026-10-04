@@ -320,17 +320,22 @@ def cmd_search(query: str, json_output: bool = False, semantic: bool = False, so
     if semantic:
         return _cmd_search_semantic(query, json_output=json_output)
     cat = _catalog(_root())
-    try:
-        hits = cat.search(query, sort=sort)
-    except ValueError:
-        # Keep explicit FTS queries working, but let ordinary questions with
-        # punctuation use the same safe terms as retrieval.
-        from .retrieval import extract_keywords
+    from .retrieval import extract_keywords, retrieve
+    from .catalog import SearchHit
 
-        terms = extract_keywords(query)
-        hits = cat.search(" ".join(f'"{term}"' for term in terms), sort=sort) if terms else []
-        if not hits and terms:
-            hits = cat.search(" OR ".join(f'"{term}"' for term in terms), sort=sort)
+    natural_question = sort == "relevance" and ("?" in query or query.lower().startswith(("what ", "how ", "why ", "which ", "where ", "when ", "who ")))
+    if natural_question:
+        result = retrieve(query, cat, TextStrataStore(_root()), limit=10)
+        hits = [SearchHit(id=c.item_id, title=c.title, type=c.type, tags=", ".join(c.tags), snippet=c.chunk[:240]) for c in result.candidates]
+    else:
+        try:
+            hits = cat.search(query, sort=sort)
+        except ValueError:
+            # Preserve explicit FTS queries, but recover from stray punctuation.
+            terms = extract_keywords(query)
+            hits = cat.search(" ".join(f'"{term}"' for term in terms), sort=sort) if terms else []
+            if not hits and terms:
+                hits = cat.search(" OR ".join(f'"{term}"' for term in terms), sort=sort)
     if json_output:
         print(json.dumps([
             {
