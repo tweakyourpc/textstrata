@@ -22,6 +22,10 @@ For the Google-only comparison, I used the connected Google Drive interface to r
 
 The `TextStrata Manifest` spreadsheet has separate `Manifest` (Inbox acquisition) and `Library` (published mirror) tabs. New local records appear in `Library`; the older Inbox rows remain in `Manifest`. The seven current Docs above are indexed as `Active`. After the 15-minute wrapper completed successfully, the Library hash matched normalized local SHA-256 for `system.textstrata-current-state`, `system.google-bridge-current`, `neoforge-current-architecture`, and `system.agent-engineering-principles`. Connected Drive reads found the current bootstrap, conflict-resolution, provenance, and NeoForge root facts in the corresponding Docs. The bridge pass that propagated the state and conflict article edits exited 0 in 96 seconds, below the 15-minute interval.
 
+## Retrieval probe
+
+The shared keyword retrieval path put the current canonical article first for TextStrata architecture, Google bridge operation, NeoForge agent entry, engineering principles, recent changes, and the document superseding the old NeoForge implementation. The port 8707 question returned a historical service incident first and the current state second; both identify the TextStrata service, but current operational confirmation still requires `/whoami` and PortBroker. These results were checked after rebuilding the catalog from 189 normalized articles. They show useful curation gains without claiming that every free-form question ranks perfectly.
+
 ## Gaps and follow-up
 
 - A Google-only agent can reconstruct the system from clearly titled current Docs, but Google has no deterministic `bootstrap neoforge` action. It must find and read the canonical Docs. A small mirrored entry-point record or generated index may improve discovery if real Google-only use shows missed records.
