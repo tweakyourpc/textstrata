@@ -167,7 +167,7 @@ def cmd_google_conflict(args: argparse.Namespace) -> int:
     store = TextStrataStore(_root())
     catalog = None if args.action == "inspect" else _catalog(_root())
     try:
-        client = _bridge_client(args.config)
+        client = _bridge_client(args.source_config)
         if args.action == "inspect":
             inspected = inspect_library_conflict(store, client, args.item_id)
             snapshot = save_library_conflict_snapshot(store, inspected)
@@ -1271,27 +1271,27 @@ def build_parser() -> argparse.ArgumentParser:
         epilog="Workspace precedence: --workspace, environment, installation config, then ./.workspace.",
     )
     p.add_argument("--workspace", metavar="PATH", help="isolated TextStrata workspace")
-    p.add_argument("--config", metavar="PATH", help="installation JSON path (overrides TEXTSTRATA_CONFIG)")
+    p.add_argument("--config", dest="installation_config", metavar="PATH", help="installation JSON path (overrides TEXTSTRATA_CONFIG)")
     sub = p.add_subparsers(dest="command", required=True)
 
     ingest_p = sub.add_parser("ingest", help="ingest files or a configured source")
     ingest_p.add_argument("files", nargs="*", metavar="FILE", help="path to markdown file(s), google, or google-bridge")
     ingest_p.add_argument("--dry-run", action="store_true", help="inspect a source without changing the workspace")
-    ingest_p.add_argument("--config", metavar="PATH", help="source configuration path")
+    ingest_p.add_argument("--config", dest="source_config", metavar="PATH", help="source configuration path")
 
     sources_p = sub.add_parser("sources", help="configure and inspect external sources")
     sources_sub = sources_p.add_subparsers(dest="sources_action", required=True)
     sources_add = sources_sub.add_parser("add", help="create source configuration")
     sources_add.add_argument("kind", choices=("google-drive", "google-bridge"))
-    sources_add.add_argument("--config", metavar="PATH")
+    sources_add.add_argument("--config", dest="source_config", metavar="PATH")
     sources_health = sources_sub.add_parser("health", help="test source configuration and access")
     sources_health.add_argument("kind", choices=("google-drive", "google-bridge"))
-    sources_health.add_argument("--config", metavar="PATH")
+    sources_health.add_argument("--config", dest="source_config", metavar="PATH")
 
     mirror_p = sub.add_parser("mirror", help="mirror canonical articles to a configured transport")
     mirror_p.add_argument("source", choices=("google-bridge",))
     mirror_p.add_argument("--dry-run", action="store_true")
-    mirror_p.add_argument("--config", metavar="PATH")
+    mirror_p.add_argument("--config", dest="source_config", metavar="PATH")
 
     conflict_p = sub.add_parser("google-conflict", help="inspect or explicitly resolve a Library Conflict")
     conflict_p.add_argument("action", choices=("inspect", "keep_local", "keep_google", "manual_merge"))
@@ -1300,7 +1300,7 @@ def build_parser() -> argparse.ArgumentParser:
     conflict_p.add_argument("--expected-google-fingerprint")
     conflict_p.add_argument("--reason")
     conflict_p.add_argument("--file", help="merged Markdown file for manual_merge")
-    conflict_p.add_argument("--config", metavar="PATH")
+    conflict_p.add_argument("--config", dest="source_config", metavar="PATH")
 
     vault_import_p = sub.add_parser("vault-import", help="import an Obsidian vault")
     vault_import_p.add_argument("path", metavar="PATH", help="Obsidian vault directory")
@@ -1449,8 +1449,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if args.config:
-        os.environ["TEXTSTRATA_CONFIG"] = str(Path(args.config).expanduser().resolve())
+    if args.installation_config:
+        os.environ["TEXTSTRATA_CONFIG"] = str(Path(args.installation_config).expanduser().resolve())
     if args.command != "setup":
         load_installation_config()
     selected_workspace = (args.storage or args.workspace) if args.command == "setup" else args.workspace
@@ -1475,9 +1475,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "ingest":
         if args.files == ["google-bridge"]:
-            return cmd_bridge("ingest", dry_run=args.dry_run, config_path=args.config)
+            return cmd_bridge("ingest", dry_run=args.dry_run, config_path=args.source_config)
         if args.files and args.files[0] == "google":
-            return cmd_ingest_google(dry_run=args.dry_run, config_path=args.config)
+            return cmd_ingest_google(dry_run=args.dry_run, config_path=args.source_config)
         if not args.files or args.dry_run:
             parser.error("ingest requires files, or use `ingest google [--dry-run]`")
         return cmd_ingest(args.files)
@@ -1485,13 +1485,13 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_google_conflict(args)
     if args.command == "sources":
         if args.sources_action == "add":
-            return cmd_sources_add(args.kind, config_path=args.config)
+            return cmd_sources_add(args.kind, config_path=args.source_config)
         if args.sources_action == "health":
             if args.kind == "google-drive":
-                return cmd_google_health(config_path=args.config)
-            return cmd_bridge("health", config_path=args.config)
+                return cmd_google_health(config_path=args.source_config)
+            return cmd_bridge("health", config_path=args.source_config)
     if args.command == "mirror":
-        return cmd_bridge("mirror", dry_run=args.dry_run, config_path=args.config)
+        return cmd_bridge("mirror", dry_run=args.dry_run, config_path=args.source_config)
     if args.command == "init":
         return cmd_init()
     if args.command == "doctor":

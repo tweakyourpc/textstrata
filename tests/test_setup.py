@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import json
 import tempfile
 import unittest
 import io
@@ -9,7 +10,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
-from textstrata.__main__ import cmd_restart, main
+from textstrata.__main__ import build_parser, cmd_restart, main
 from textstrata.application.setup import initialize_workspace, setup_status
 from textstrata.presentation import PAPER_SKIN, render_setup_html
 from textstrata.workspace import load_installation_config, resolve_workspace
@@ -62,6 +63,32 @@ class SetupUseCaseTests(unittest.TestCase):
                 self.assertEqual(main(["--config", str(config), "config", "check"]), 0)
             self.assertEqual(load_installation_config(path=config)["workspace"], str(workspace))
             self.assertTrue((workspace / "normalized").is_dir())
+
+    def test_installation_and_google_source_configs_remain_independent(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {}, clear=True):
+            root = Path(tmp)
+            workspace = root / "vault"
+            installation = root / "installation.json"
+            source = root / "sources.yaml"
+            installation.write_text(json.dumps({
+                "schema_version": 1, "workspace": str(workspace),
+                "network": {"mode": "local", "host": "127.0.0.1", "port": 7543},
+            }), encoding="utf-8")
+            source.write_text("google_bridge: {}\n", encoding="utf-8")
+            args = build_parser().parse_args([
+                "--config", str(installation), "mirror", "google-bridge", "--config", str(source),
+            ])
+            self.assertEqual(args.installation_config, str(installation))
+            self.assertEqual(args.source_config, str(source))
+            source_only = build_parser().parse_args(["mirror", "google-bridge", "--config", str(source)])
+            self.assertIsNone(source_only.installation_config)
+            self.assertEqual(source_only.source_config, str(source))
+            with patch("textstrata.__main__.cmd_bridge", return_value=0) as bridge:
+                self.assertEqual(main([
+                    "--config", str(installation), "mirror", "google-bridge", "--config", str(source),
+                ]), 0)
+            bridge.assert_called_once_with("mirror", dry_run=False, config_path=str(source))
+            self.assertEqual(os.environ["TEXTSTRATA_CONFIG"], str(installation))
 
     def test_cli_setup_rejects_lan_without_writing(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {}, clear=True):
