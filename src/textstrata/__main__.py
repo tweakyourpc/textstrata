@@ -192,7 +192,17 @@ def cmd_search(query: str, json_output: bool = False, semantic: bool = False, so
     if semantic:
         return _cmd_search_semantic(query, json_output=json_output)
     cat = _catalog(_root())
-    hits = cat.search(query, sort=sort)
+    try:
+        hits = cat.search(query, sort=sort)
+    except ValueError:
+        # Keep explicit FTS queries working, but let ordinary questions with
+        # punctuation use the same safe terms as retrieval.
+        from .retrieval import extract_keywords
+
+        terms = extract_keywords(query)
+        hits = cat.search(" ".join(f'"{term}"' for term in terms), sort=sort) if terms else []
+        if not hits and terms:
+            hits = cat.search(" OR ".join(f'"{term}"' for term in terms), sort=sort)
     if json_output:
         print(json.dumps([
             {
