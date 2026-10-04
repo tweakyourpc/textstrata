@@ -86,7 +86,7 @@ class BridgeClient:
             action = json.loads(body).get("action")
         except (ValueError, AttributeError):
             action = None
-        timeout = 300 if action in {"mirror_upsert", "complete_library_import", "fetch_library_revision"} else 45
+        timeout = 300 if action in {"mirror_upsert", "complete_library_import", "fetch_library_revision", "list_library_status"} else 45
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 result = json.loads(response.read(4 * 1024 * 1024).decode("utf-8"))
@@ -97,7 +97,7 @@ class BridgeClient:
         return result
 
     def call(self, action: str, payload: Mapping[str, Any] | None = None) -> dict[str, Any]:
-        if action not in {"ping", "list_ready", "fetch_source", "ack", "mirror_status", "mirror_upsert", "list_library_updates", "fetch_library_revision", "complete_library_import", "mark_library_conflict"}:
+        if action not in {"ping", "list_ready", "fetch_source", "ack", "mirror_status", "list_library_status", "mirror_upsert", "list_library_updates", "fetch_library_revision", "complete_library_import", "mark_library_conflict"}:
             raise BridgeError("UNKNOWN_ACTION")
         envelope = signed_envelope(action, payload or {}, self.config.secret)
         body = json.dumps(envelope, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -253,6 +253,20 @@ def mirror_bridge(store: TextStrataStore, client: BridgeClient, *, dry_run: bool
     results = import_library_bridge(store, client, dry_run=dry_run, catalog=catalog)
     blocked = {result["record"] for result in results if result["action"] in {"CONFLICT", "ERROR"} or dry_run and result["action"] in {"IMPORT", "RETRY"}}
     excluded = {value.strip() for value in os.environ.get("TEXTSTRATA_MIRROR_EXCLUDE_IDS", "").split(",") if value.strip()}
+    try:
+        listed = client.call("list_library_status").get("records")
+    except BridgeError as exc:
+        if exc.code != "UNKNOWN_ACTION":
+            raise
+        listed = None  # Older Apps Script deployment: retain per-item status checks.
+    if listed is not None and not isinstance(listed, list):
+        raise BridgeError("INVALID_RESPONSE")
+    remote_by_id: dict[str, dict[str, str]] = {}
+    if listed is not None:
+        for row in listed:
+            if not isinstance(row, dict) or not isinstance(row.get("id"), str) or row["id"] in remote_by_id or not isinstance(row.get("hash"), str) or not isinstance(row.get("status"), str):
+                raise BridgeError("INVALID_RESPONSE")
+            remote_by_id[row["id"]] = row
     for path in store.normalized_paths():
         try:
             canonical = normalize_text(path.read_text(encoding="utf-8"))
@@ -260,7 +274,7 @@ def mirror_bridge(store: TextStrataStore, client: BridgeClient, *, dry_run: bool
             if item.id in excluded or item.id in blocked:
                 continue
             digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-            remote = client.call("mirror_status", {"id": item.id}).get("record")
+            remote = remote_by_id.get(item.id) if listed is not None else client.call("mirror_status", {"id": item.id}).get("record")
             if remote is not None and not isinstance(remote, dict):
                 raise BridgeError("INVALID_RESPONSE")
             if remote is not None and remote.get("status") not in {None, "Active", "Pending"}:

@@ -141,6 +141,7 @@ const mirror = {id: 'ts-example-001', title: 'Example', content, hash: digest, u
 assert.strictEqual(context.mirrorUpsert_(mirror).action, 'CREATE');
 assert.strictEqual(context.mirrorUpsert_(mirror).action, 'UNCHANGED');
 assert.strictEqual(context.mirrorStatus_({id: mirror.id}).hash, digest);
+assert.strictEqual(context.listLibraryStatus_({})[0].hash, digest);
 rows.Library[1][8] = 'Updated';
 const pending = context.listLibraryUpdates_();
 assert.strictEqual(pending.length, 1);
@@ -193,5 +194,6 @@ assert.strictEqual(rows.Library[2][8], 'Active');
 assert.strictEqual(rows.Library[2][3], interrupted.hash);
 files[rows.Library[1][2]].parents = ['syntheticInbox_123'];
 assert.throws(() => context.mirrorStatus_({id: mirror.id}), /DESTINATION_OUTSIDE_LIBRARY/);
+assert.throws(() => context.listLibraryStatus_({}), /DESTINATION_OUTSIDE_LIBRARY/);
 assert.strictEqual(typeof context.deleteSource_, 'undefined');
 console.log('Google bridge Apps Script protocol and capability tests passed');

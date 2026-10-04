@@ -39,6 +39,8 @@ class FakeBridge:
             return {"status": "Ingested"}
         if action == "mirror_status":
             return {"record": self.library.get(payload["id"])}
+        if action == "list_library_status":
+            return {"records": list(self.library.values())}
         if action == "list_library_updates":
             return {"records": [{"id": key, "doc_id": value["doc_id"], "hash": value["hash"]} for key, value in self.library.items() if value.get("status") == "Updated"]}
         if action == "fetch_library_revision":
@@ -126,7 +128,31 @@ class BridgeTests(unittest.TestCase):
             with patch.dict("os.environ", {"TEXTSTRATA_MIRROR_EXCLUDE_IDS": "ts-example-001"}):
                 self.assertEqual(mirror_bridge(store, bridge, dry_run=True), [])
                 self.assertEqual(mirror_bridge(store, bridge), [])
-            self.assertTrue(all(action == "list_library_updates" for action, _ in bridge.calls))
+            self.assertTrue(all(action in {"list_library_updates", "list_library_status"} for action, _ in bridge.calls))
+
+    def test_mirror_reads_library_status_once_per_pass(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = TextStrataStore(temp)
+            ingest_bridge(store, FakeBridge())
+            bridge = FakeBridge()
+            mirror_bridge(store, bridge)
+            actions = [action for action, _ in bridge.calls]
+            self.assertEqual(actions.count("list_library_status"), 1)
+            self.assertNotIn("mirror_status", actions)
+
+    def test_mirror_falls_back_for_older_script_deployment(self):
+        class LegacyBridge(FakeBridge):
+            def call(self, action, payload=None):
+                if action == "list_library_status":
+                    raise BridgeError("UNKNOWN_ACTION")
+                return super().call(action, payload)
+
+        with tempfile.TemporaryDirectory() as temp:
+            store = TextStrataStore(temp)
+            ingest_bridge(store, FakeBridge())
+            bridge = LegacyBridge()
+            self.assertEqual(mirror_bridge(store, bridge)[0]["action"], "CREATE")
+            self.assertIn("mirror_status", [action for action, _ in bridge.calls])
 
     def test_library_metadata_import_and_retry(self):
         with tempfile.TemporaryDirectory() as temp:

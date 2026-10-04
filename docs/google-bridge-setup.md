@@ -94,6 +94,12 @@ textstrata mirror google-bridge
 
 The first ingest reports `NEW + ACK` for eligible articles and the bridge changes only their `Status`, `Ingested`, and `Hash` cells. A later Ready row whose content is already stored locally reports `UNCHANGED + ACK` and retries acknowledgment. The mirror compares canonical Markdown hashes with the Library index and reports `CREATE`, `UPDATE`, or `UNCHANGED`. It mirrors the useful article corpus and metadata; it is not a byte-for-byte application backup.
 
+The mirror reads a folder-verified Library status snapshot once per pass, then
+rechecks any changed row inside the guarded upsert action. This avoids one
+network round trip and Sheet read per unchanged article. An older Apps Script
+deployment without `list_library_status` remains compatible through the
+per-item status fallback; deploy the current script to get the faster pass.
+
 ## Editing an existing Library article from Google Drive
 
 Edit the existing Library Google Doc. Keep its `TextStrata ID`, `Origin: textstrata-library`, and canonical Markdown frontmatter intact; in particular, do not change the frontmatter `id` or provenance. Edit Title, Topic, and Tags in the **Library** index row; that row is authoritative for those fields. Leave `ID`, `Doc ID`, `Hash`, and `Source` unchanged. Set only that Library row's `Status` to `Updated` after all Doc and row edits are saved. Do not change the Inbox `Manifest` for an existing Library article.

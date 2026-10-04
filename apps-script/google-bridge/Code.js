@@ -2,7 +2,7 @@
 const BRIDGE_VERSION = 1;
 const INBOX_HEADERS = ['ID', 'Status', 'Doc ID'];
 const LIBRARY_HEADERS = ['ID', 'Title', 'Doc ID', 'Hash', 'Updated', 'Topic', 'Tags', 'Source', 'Status'];
-const ACTIONS = ['ping', 'list_ready', 'fetch_source', 'ack', 'mirror_status', 'mirror_upsert', 'list_library_updates', 'fetch_library_revision', 'complete_library_import', 'mark_library_conflict'];
+const ACTIONS = ['ping', 'list_ready', 'fetch_source', 'ack', 'mirror_status', 'list_library_status', 'mirror_upsert', 'list_library_updates', 'fetch_library_revision', 'complete_library_import', 'mark_library_conflict'];
 
 function error_(code) { throw new Error(code); }
 function property_(name) {
@@ -70,6 +70,7 @@ function dispatch_(action, payload) {
   if (action === 'fetch_source') return {record: fetchSource_(payload)};
   if (action === 'ack') return ack_(payload);
   if (action === 'mirror_status') return {record: mirrorStatus_(payload)};
+  if (action === 'list_library_status') return {records: listLibraryStatus_(payload)};
   if (action === 'mirror_upsert') return mirrorUpsert_(payload);
   if (action === 'list_library_updates') return {records: listLibraryUpdates_()};
   if (action === 'fetch_library_revision') return {record: fetchLibraryRevision_(payload)};
@@ -158,6 +159,22 @@ function mirrorStatus_(payload) {
     if (!inFolder_(file, property_('LIBRARY_FOLDER_ID')) || inFolder_(file, property_('INBOX_FOLDER_ID'))) error_('DESTINATION_OUTSIDE_LIBRARY');
   }
   return row ? {id: String(row.ID), doc_id: String(row['Doc ID']), hash: String(row.Hash), updated: String(row.Updated), status: String(row.Status)} : null;
+}
+function listLibraryStatus_(payload) {
+  if (Object.keys(payload).length !== 0) error_('INVALID_PAYLOAD');
+  const seen = {};
+  return table_(librarySheet_(), LIBRARY_HEADERS).rows.filter(function (row) {
+    return String(row.ID).trim();
+  }).map(function (row) {
+    const id = String(row.ID).trim();
+    if (!/^[a-zA-Z0-9._-]+$/.test(id) || seen[id]) error_('LIBRARY_INDEX_CONFLICT');
+    seen[id] = true;
+    const docId = String(row['Doc ID']).trim();
+    if (!docId) error_('DESTINATION_OUTSIDE_LIBRARY');
+    const file = DriveApp.getFileById(docId);
+    if (!inFolder_(file, property_('LIBRARY_FOLDER_ID')) || inFolder_(file, property_('INBOX_FOLDER_ID'))) error_('DESTINATION_OUTSIDE_LIBRARY');
+    return {id: id, doc_id: docId, hash: String(row.Hash), status: String(row.Status)};
+  });
 }
 function libraryRevisionRow_(payload) {
   if (Object.keys(payload).some(function (key) { return ['id', 'expected_doc_id', 'expected_hash', 'expected_fingerprint'].indexOf(key) < 0; })) error_('INVALID_PAYLOAD');
