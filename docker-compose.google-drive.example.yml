@@ -1,0 +1,19 @@
+services:
+  textstrata-google-ingest:
+    image: textstrata:latest
+    entrypoint: ["python3", "-m", "textstrata"]
+    command: ["ingest", "google"]
+    environment:
+      TEXTSTRATA_WORKSPACE: /data/textstrata-store
+      TEXTSTRATA_SOURCES_CONFIG: /run/secrets/textstrata-sources.yaml
+      TEXTSTRATA_GOOGLE_CREDENTIALS_PATH: /run/secrets/google-client.json
+      TEXTSTRATA_GOOGLE_TOKEN_PATH: /data/textstrata-config/google-drive-token.json
+    volumes:
+      - textstrata-store:/data/textstrata-store
+      - textstrata-config:/data/textstrata-config
+      - ./private/sources.yaml:/run/secrets/textstrata-sources.yaml:ro
+      - ./private/google-client.json:/run/secrets/google-client.json:ro
+
+volumes:
+  textstrata-store:
+  textstrata-config:

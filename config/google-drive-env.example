@@ -1,0 +1,9 @@
+# Copy to .env only on a private machine. Do not put real values here.
+TEXTSTRATA_SOURCES_CONFIG=/run/secrets/textstrata-sources.yaml
+TEXTSTRATA_GOOGLE_MANIFEST_ID=synthetic_manifest_id_000000000000000000
+TEXTSTRATA_GOOGLE_CREDENTIALS_PATH=/run/secrets/google-client.json
+TEXTSTRATA_GOOGLE_TOKEN_PATH=/data/textstrata-config/google-drive-token.json
+TEXTSTRATA_STATE_DIR=/data/textstrata-state
+# Optional Apps Script bridge (the secret below is an unusable placeholder).
+TEXTSTRATA_GOOGLE_BRIDGE_URL=https://script.google.com/macros/s/EXAMPLE_DEPLOYMENT_ID/exec
+TEXTSTRATA_GOOGLE_BRIDGE_SECRET=REPLACE_WITH_PRIVATE_RANDOM_SECRET
