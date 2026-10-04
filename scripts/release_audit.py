@@ -11,7 +11,7 @@ from pathlib import Path
 EXCLUDED_PARTS = {".workspace", "textstrata-store", ".codex", ".worktrees", ".venv", "__pycache__", ".git"}
 PRIVATE_NAMES = {"AGENTS.md", "MASTER_PROMPT.md", "textstrata-server.service"}
 # Agent-run documents under docs/: the contract, its ledgers, per-task rulings, blast-radius
-# audits and inter-agent handoffs. Named families rather than fixed names because rulings,
+# audits, environment-specific knowledge audits, and inter-agent handoffs. Named families rather than fixed names because rulings,
 # ledgers and handoffs are added as the run proceeds, and a fixed list goes stale silently.
 # Standalone private review logs are fixed-name exceptions to the glob-family rule:
 # they do not belong to an accumulating family, so no glob reaches them.
@@ -24,6 +24,8 @@ PRIVATE_NAME_PATTERNS = (
     re.compile(r"\Atask\d+[a-z]?-blast-radius\.md\Z"),
     re.compile(r"\Abaseline-summary\.md\Z"),
     re.compile(r"\Asecurity-review-gate2\.md\Z"),
+    re.compile(r"\Acold-agent-validation-[a-z0-9_.-]+\.md\Z"),
+    re.compile(r"\Aknowledge-audit-[a-z0-9_.-]+\.md\Z"),
 )
 PRIVATE_PATTERNS = (
     re.compile(r"/home/[A-Za-z0-9_.-]+/"),

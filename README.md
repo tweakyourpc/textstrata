@@ -145,6 +145,14 @@ the workspace. Per-space permissions are not implemented yet: every signed-in
 account can read and edit the whole workspace, and only administrators can
 create invitations or restart the service.
 
+The local CLI and stdio MCP, including project bootstrap and reviewed article
+proposals, remain trusted-operator interfaces. The Google bridge mirrors the
+installation-wide corpus and does not apply browser account permissions. Do
+not use it for private team spaces until space authorization and matching
+Google access rules are implemented. Existing non-loopback HTTP deployments
+need an authenticated HTTPS or trusted-proxy configuration and first admin
+before restarting with this security foundation.
+
 The Docker **lite** profile is the portable core and does not start Ollama.
 The **full** profile adds document/image/YouTube/audio acquisition packages and
 an optional Ollama companion; it still does not pull a model automatically.

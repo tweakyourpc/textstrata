@@ -1,8 +1,9 @@
 # TextStrata Security and Multi-User Implementation
 
-Status: in progress on `security/multi-user-foundation`. Gate 1 and gate 2 are
-implemented and have passed independent review. Do not deploy this branch as an
-office service yet. The current household service has not been migrated.
+Status: foundation implemented on `security/multi-user-foundation` and reviewed
+against GitHub main on 2026-10-04. Gate 1 and gate 2 are implemented. Do not
+deploy this branch as an office service yet. The current household service has
+not been migrated.
 
 ## Product contract
 
@@ -64,11 +65,11 @@ their location or permissions. A note may appear in multiple collections.
 
 ## Delivery gates
 
-1. **Containment and portable setup (done, uncommitted):** block unauthenticated
+1. **Containment and portable setup (implemented in this branch):** block unauthenticated
    LAN binding, make reads/assets private, remove mutating GET behavior,
    constrain unsafe rendered URLs, and introduce versioned installation
    configuration.
-2. **Authenticated LAN entry (reviewed):** add first-admin bootstrap, sessions, CSRF,
+2. **Authenticated LAN entry (implemented in this branch):** add first-admin bootstrap, sessions, CSRF,
    invitation management, production HTTP serving, direct HTTPS and optional
    reverse proxy modes. Cover all read and write routes, including legacy aliases
    and assets. Only then permit LAN binding. Test direct-port and spoofed-header
@@ -90,6 +91,31 @@ For each gate, run anonymous and cross-role denial tests against both browser an
 direct API paths. Also test aliases, asset downloads, cache headers, job races,
 revocation, and failure recovery. A passing test count alone is not evidence of
 authorization completeness.
+
+## Integration with current TextStrata main (2026-10-04)
+
+Current main also has the signed Google Inbox/Library bridge, the deterministic
+project bootstrap, and reviewed article-change proposals. Their CLI and stdio
+MCP paths are **local operator capabilities**, outside this branch's HTTP
+session gate. Do not expose those processes, their credentials, or writable
+workspace mounts to ordinary team users. In particular, the Google Library
+mirror and `get_project_context` currently read from one installation-wide
+corpus; neither filters by user or future space membership. Do not enable the
+mirror for private multi-user spaces until permissions, Google folder access,
+and publication policy are scoped and tested. The existing single-user bridge
+and cron configuration are unchanged by merging source code.
+
+This branch changes the server's startup contract: unauthenticated HTTP on a
+non-loopback address fails closed. An existing LAN service using that pattern
+must not be restarted from this code until an administrator has configured
+authenticated `https` or trusted `proxy` mode and bootstrapped the first admin.
+Merge does not migrate a running service, accounts, or Google credentials. The
+current local service must be migrated and tested as a separate rollout step.
+The global `--config` selects installation JSON; Google `ingest`, `mirror`,
+`sources`, and `google-conflict` use their own command-level `--config` for
+source YAML. Both can be supplied together without one replacing the other.
+The full combined quality gate and backup/restore/upgrade smoke check passed
+after merging current main and resolving the source-config collision.
 
 ## Current configuration interface
 
