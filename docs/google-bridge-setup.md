@@ -118,8 +118,10 @@ The client serializes `payload_json` with sorted keys and compact separators. Th
 
 For a 15-minute production interval on Linux, use the included wrapper from
 cron. It loads the private environment file, uses a state-directory lock to
-prevent overlapping runs, ingests first, then mirrors only if ingestion
-succeeded. Create the private log directory before adding this entry:
+prevent overlapping runs, ingests first, then always runs the Library import
+and mirror pass. A failed Inbox row does not block independent Library work;
+the wrapper still exits nonzero so cron monitoring can report the failed pass.
+Create the private log directory before adding this entry:
 
 ```cron
 */15 * * * * /path/to/textstrata-impl/scripts/google-bridge-sync.sh >> /private/textstrata/logs/google-bridge.log 2>&1

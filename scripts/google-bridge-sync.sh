@@ -26,5 +26,13 @@ mkdir -p "$TEXTSTRATA_STATE_DIR"
 exec 9>"$TEXTSTRATA_STATE_DIR/google-bridge-sync.lock"
 flock -n 9 || exit 0
 
-"$TEXTSTRATA_BIN" ingest google-bridge
-"$TEXTSTRATA_BIN" mirror google-bridge
+ingest_status=0
+mirror_status=0
+
+"$TEXTSTRATA_BIN" ingest google-bridge || ingest_status=$?
+"$TEXTSTRATA_BIN" mirror google-bridge || mirror_status=$?
+
+if (( ingest_status != 0 || mirror_status != 0 )); then
+  printf 'Google bridge sync incomplete: ingest_status=%d mirror_status=%d\n' "$ingest_status" "$mirror_status" >&2
+  exit 1
+fi
