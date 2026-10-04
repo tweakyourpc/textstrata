@@ -15,6 +15,7 @@ from pathlib import Path
 
 from . import activity, classify, embeddings, frontmatter
 from .catalog import Catalog
+from .context import get_project_context, render_project_context
 from .control import backup_workspace, control_doctor, load_config, load_effective_config, process_approved_ingest, restore_preview, restore_workspace
 from .ingest import _update_file, build_item, ingest_file
 from .linking import build_links, links_for
@@ -1089,6 +1090,10 @@ def build_parser() -> argparse.ArgumentParser:
     relate_p.add_argument("items", nargs="+", metavar="ITEM_ID", help="two or more item IDs")
     relate_p.add_argument("--model", metavar="MODEL", help="Ollama model name")
 
+    bootstrap_p = sub.add_parser("bootstrap", help="assemble deterministic project context from current articles")
+    bootstrap_p.add_argument("project", help="project slug, for example neoforge")
+    bootstrap_p.add_argument("--json", action="store_true", help="emit structured JSON")
+
     completion_p = sub.add_parser("completion", help="generate shell completions")
     completion_p.add_argument("shell", choices=("bash", "zsh", "fish"), help="shell type")
 
@@ -1163,6 +1168,13 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_daily(model=getattr(args, "model", None), days=args.days)
     if args.command == "relate":
         return cmd_relate(args.items, model=getattr(args, "model", None))
+    if args.command == "bootstrap":
+        try:
+            context = get_project_context(TextStrataStore(workspace_root), args.project)
+        except ValueError as exc:
+            parser.error(str(exc))
+        print(json.dumps(context, ensure_ascii=False, indent=2) if args.json else render_project_context(context), end="" if not args.json else "\n")
+        return 0
     if args.command == "completion":
         return cmd_completion(args.shell)
     if args.command == "watch":

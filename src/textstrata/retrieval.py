@@ -139,13 +139,17 @@ def retrieve(
     terms = extract_keywords(query)
     if not terms:
         return RetrievalResult(query, strategy, terms, (), 0.0, False, "no usable query terms")
-    search_query = " ".join(terms) or _fts_safe(query)
+    # Quote normalized terms so punctuation and hyphens cannot become FTS
+    # syntax. A broad OR retry is still a valid FTS expression when the
+    # initial all-terms search has no matches.
+    search_query = " ".join(f'"{term}"' for term in terms)
 
     hits = catalog.search(search_query, limit=max(limit * 2, limit))
-    if not hits and search_query != query:
-        hits = catalog.search(query, limit=max(limit * 2, limit))
+    if not hits:
+        hits = catalog.search(" OR ".join(f'"{term}"' for term in terms), limit=max(limit * 4, limit))
 
     candidates: list[RetrievalCandidate] = []
+    rank_hints: dict[str, tuple[int, int]] = {}
     for hit in hits:
         path = store.normalized_path_for_id(hit.id)
         if not path:
@@ -156,6 +160,9 @@ def retrieve(
             continue
         if not item.body or len(item.body.strip()) < min_body_chars:
             continue
+        facet = item.extra.get("context")
+        status = facet.get("status") if isinstance(facet, dict) else None
+        rank_hints[item.id] = (1 if status == "current" else -1 if status == "superseded" else 0, item.retrieval_priority)
         chunks = chunk_text(item.body)
         scored = [(_candidate_score(chunk, terms), chunk) for chunk in chunks]
         (score, matched), chunk = max(scored, key=lambda value: (value[0][0], value[1]))
@@ -169,7 +176,13 @@ def retrieve(
             score=score,
         ))
 
-    candidates.sort(key=lambda candidate: (-candidate.score, candidate.item_id))
+    candidates.sort(key=lambda candidate: (
+        -candidate.score,
+        -sum(term in candidate.title.lower() for term in terms),
+        -rank_hints[candidate.item_id][0],
+        -rank_hints[candidate.item_id][1],
+        candidate.item_id,
+    ))
     selected = tuple(candidates[:limit])
     evidence_score = selected[0].score if selected else 0.0
     if not terms:

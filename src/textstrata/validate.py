@@ -59,6 +59,11 @@ def validate(item: TextStrataItem, diagnostics=None) -> ValidationResult:
             f"preservation={item.preservation.value}"
         )
 
+    if "context" in item.extra:
+        from .context import context_errors
+
+        errors.extend(context_errors(item))
+
     def duplicate_values(field_name: str, values: list[str]) -> list[str]:
         seen: set[object] = set()
         duplicates: list[str] = []

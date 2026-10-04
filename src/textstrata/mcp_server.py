@@ -16,6 +16,7 @@ from typing import Any
 from . import __version__, activity, classify, linking, operations, research, review, similarity
 from .analyze import analyze as analyze_gaps
 from .catalog import Catalog
+from .context import get_project_context
 from .control import backup_preview, backup_workspace, control_doctor, load_config, load_effective_config, restore_preview, restore_workspace
 from .ingest import build_item, ingest_text
 from .models import TextStrataItem
@@ -484,6 +485,16 @@ class TextStrataMCP:
                 },
             },
             {
+                "name": "get_project_context",
+                "description": "Get bounded, deterministic current context for a project from canonical local articles.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"project": {"type": "string"}},
+                    "required": ["project"],
+                    "additionalProperties": False,
+                },
+            },
+            {
                 "name": "list_items",
                 "description": "List all published normalized items.",
                 "inputSchema": {
@@ -826,6 +837,13 @@ class TextStrataMCP:
             items = self._all_items()
             text = "\n".join(f"{item.id} [{item.type.value}] {item.title}" for item in items) or "no items"
             return {"content": [{"type": "text", "text": text}]}
+
+        if name == "get_project_context":
+            try:
+                context = get_project_context(self.store, arguments["project"])
+            except ValueError as exc:
+                return {"isError": True, "content": [{"type": "text", "text": str(exc)}]}
+            return {"content": [{"type": "text", "text": json.dumps(context, ensure_ascii=False, indent=2)}]}
 
         if name == "read_item":
             item = self._read_item(arguments["item_id"])
