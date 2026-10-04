@@ -16,8 +16,10 @@ from typing import Any
 from . import __version__, activity, classify, linking, operations, research, review, similarity
 from .analyze import analyze as analyze_gaps
 from .catalog import Catalog
+from .context import get_project_context
 from .control import backup_preview, backup_workspace, control_doctor, load_config, load_effective_config, restore_preview, restore_workspace
 from .ingest import build_item, ingest_text
+from .knowledge_changes import propose_article_change
 from .models import TextStrataItem
 from .presentation import PAPER_SKIN, RenderContext, render_item_html, render_text
 from .retrieval import retrieve
@@ -484,6 +486,16 @@ class TextStrataMCP:
                 },
             },
             {
+                "name": "get_project_context",
+                "description": "Get bounded, deterministic current context for a project from canonical local articles.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"project": {"type": "string"}},
+                    "required": ["project"],
+                    "additionalProperties": False,
+                },
+            },
+            {
                 "name": "list_items",
                 "description": "List all published normalized items.",
                 "inputSchema": {
@@ -748,6 +760,21 @@ class TextStrataMCP:
                 },
             },
             {
+                "name": "propose_article_change",
+                "description": "Queue a validated new or updated canonical article with a content-hash precondition for explicit review.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["create", "update"]},
+                        "content": {"type": "string"},
+                        "reason": {"type": "string"},
+                        "source_ids": {"type": "array", "items": {"type": "string"}},
+                    },
+                    "required": ["action", "content", "reason"],
+                    "additionalProperties": False,
+                },
+            },
+            {
                 "name": "propose_note",
                 "description": "Queue a new note draft for human review without publishing it.",
                 "inputSchema": {
@@ -827,6 +854,13 @@ class TextStrataMCP:
             text = "\n".join(f"{item.id} [{item.type.value}] {item.title}" for item in items) or "no items"
             return {"content": [{"type": "text", "text": text}]}
 
+        if name == "get_project_context":
+            try:
+                context = get_project_context(self.store, arguments["project"])
+            except ValueError as exc:
+                return {"isError": True, "content": [{"type": "text", "text": str(exc)}]}
+            return {"content": [{"type": "text", "text": json.dumps(context, ensure_ascii=False, indent=2)}]}
+
         if name == "read_item":
             item = self._read_item(arguments["item_id"])
             ctx = RenderContext(title=item.title, item=item, validation_errors=[], validation_warnings=[], suggested_tags=[])
@@ -836,6 +870,9 @@ class TextStrataMCP:
             path = Path(arguments["path"])
             item, suggested, fm = build_item(path.read_text(encoding="utf-8"), fallback_id=arguments.get("fallback_id") or path.stem)
             v = validate(item)
+            if fm.errors:
+                v.errors.extend(fm.errors)
+                v.ok = False
             policy = classify.suggest_policy(item.type, item.title, item.body)
             ctx = RenderContext(
                 title=item.title,
@@ -1167,6 +1204,19 @@ class TextStrataMCP:
                 "source_ids": sorted({str(item_id).strip() for item_id in arguments.get("source_ids", []) if str(item_id).strip()}),
             })
             return {"content": [{"type": "text", "text": f"queued note proposal {entry['proposal_id']}"}]}
+
+        if name == "propose_article_change":
+            try:
+                entry = propose_article_change(
+                    self.store,
+                    str(arguments.get("action", "")),
+                    str(arguments.get("content", "")),
+                    str(arguments.get("reason", "")),
+                    arguments.get("source_ids", []),
+                )
+            except ValueError as exc:
+                return {"isError": True, "content": [{"type": "text", "text": str(exc)}]}
+            return {"content": [{"type": "text", "text": f"queued article change {entry['proposal_id']}"}]}
 
         if name == "propose_tags":
             item_id = str(arguments.get("item_id", "")).strip()

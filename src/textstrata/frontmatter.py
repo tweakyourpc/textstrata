@@ -51,6 +51,7 @@ class MergedFrontmatter:
     block_count: int = 0
     conflicts: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
 
     @property
     def had_stacked_blocks(self) -> bool:
@@ -72,13 +73,14 @@ def _looks_like_prose(raw: str) -> bool:
     return structurally_prose
 
 
-def _split_leading_blocks(text: str) -> tuple[list[str], str, list[str]]:
+def _split_leading_blocks(text: str) -> tuple[list[str], str, list[str], list[str]]:
     """Peel every consecutive leading ``---`` block off the top of ``text``.
 
     Returns accepted raw YAML strings, the remaining body, and parser warnings.
     """
     blocks: list[str] = []
     warnings: list[str] = []
+    errors: list[str] = []
     rest = text
     while True:
         match = _LEADING_BLOCK_RE.match(rest)
@@ -86,6 +88,16 @@ def _split_leading_blocks(text: str) -> tuple[list[str], str, list[str]]:
             break
         candidate = match.group("block")
         if _looks_like_prose(candidate):
+            declared = {
+                match.group(1)
+                for line in candidate.splitlines()
+                if line and not line[0].isspace()
+                if (match := _SIMPLE_KV_RE.match(line))
+            }
+            if "id" in declared and ("type" in declared or "title" in declared):
+                errors.append(
+                    f"malformed structured front-matter candidate block {len(blocks) + 1}; quote colon-containing values"
+                )
             warnings.append(
                 f"rejected front-matter candidate block {len(blocks) + 1}: "
                 "parsed as prose and was preserved as body"
@@ -93,7 +105,7 @@ def _split_leading_blocks(text: str) -> tuple[list[str], str, list[str]]:
             break
         blocks.append(candidate)
         rest = rest[match.end():]
-    return blocks, rest, warnings
+    return blocks, rest, warnings, errors
 
 
 def _literal_value(value: str) -> str:
@@ -303,7 +315,7 @@ def _merge_into(
 
 def parse(text: str) -> MergedFrontmatter:
     """Parse and merge all leading front-matter blocks in ``text``."""
-    blocks, body, warnings = _split_leading_blocks(text)
+    blocks, body, warnings, errors = _split_leading_blocks(text)
     merged: dict = {}
     conflicts: list[str] = []
     origins: dict[tuple[str, ...], int] = {}
@@ -319,6 +331,7 @@ def parse(text: str) -> MergedFrontmatter:
         block_count=len(blocks),
         conflicts=conflicts,
         warnings=warnings,
+        errors=errors,
     )
 
 

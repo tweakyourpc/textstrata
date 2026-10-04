@@ -15,8 +15,10 @@ from pathlib import Path
 
 from . import activity, classify, embeddings, frontmatter
 from .catalog import Catalog
+from .context import get_project_context, render_project_context
 from .control import backup_workspace, control_doctor, load_config, load_effective_config, process_approved_ingest, restore_preview, restore_workspace
 from .ingest import _update_file, build_item, ingest_file
+from .knowledge_changes import article_change_proposal, finish_article_change
 from .linking import build_links, links_for
 from .presentation import PAPER_SKIN, RenderContext, render_item_html, render_text
 from .research import daily_briefing, relate, research, synthesize
@@ -247,6 +249,9 @@ def cmd_preview(path: str, json_output: bool = False) -> int:
     p = Path(path)
     item, suggested, fm = build_item(p.read_text(encoding="utf-8"), fallback_id=p.stem)
     result = validate(item)
+    if fm.errors:
+        result.errors.extend(fm.errors)
+        result.ok = False
     policy = classify.suggest_policy(item.type, item.title, item.body)
     payload = {
         "path": str(p),
@@ -315,7 +320,22 @@ def cmd_search(query: str, json_output: bool = False, semantic: bool = False, so
     if semantic:
         return _cmd_search_semantic(query, json_output=json_output)
     cat = _catalog(_root())
-    hits = cat.search(query, sort=sort)
+    from .retrieval import extract_keywords, retrieve
+    from .catalog import SearchHit
+
+    natural_question = sort == "relevance" and ("?" in query or query.lower().startswith(("what ", "how ", "why ", "which ", "where ", "when ", "who ")))
+    if natural_question:
+        result = retrieve(query, cat, TextStrataStore(_root()), limit=10)
+        hits = [SearchHit(id=c.item_id, title=c.title, type=c.type, tags=", ".join(c.tags), snippet=c.chunk[:240]) for c in result.candidates]
+    else:
+        try:
+            hits = cat.search(query, sort=sort)
+        except ValueError:
+            # Preserve explicit FTS queries, but recover from stray punctuation.
+            terms = extract_keywords(query)
+            hits = cat.search(" ".join(f'"{term}"' for term in terms), sort=sort) if terms else []
+            if not hits and terms:
+                hits = cat.search(" OR ".join(f'"{term}"' for term in terms), sort=sort)
     if json_output:
         print(json.dumps([
             {
@@ -1242,6 +1262,15 @@ def build_parser() -> argparse.ArgumentParser:
     relate_p.add_argument("items", nargs="+", metavar="ITEM_ID", help="two or more item IDs")
     relate_p.add_argument("--model", metavar="MODEL", help="Ollama model name")
 
+    bootstrap_p = sub.add_parser("bootstrap", help="assemble deterministic project context from current articles")
+    bootstrap_p.add_argument("project", help="project slug, for example neoforge")
+    bootstrap_p.add_argument("--json", action="store_true", help="emit structured JSON")
+
+    proposals_p = sub.add_parser("knowledge-proposals", help="review structured article changes")
+    proposals_p.add_argument("action", choices=("list", "show", "apply", "reject"))
+    proposals_p.add_argument("proposal_id", nargs="?")
+    proposals_p.add_argument("--reviewer", help="reviewer identity for apply or reject")
+
     completion_p = sub.add_parser("completion", help="generate shell completions")
     completion_p.add_argument("shell", choices=("bash", "zsh", "fish"), help="shell type")
 
@@ -1333,6 +1362,35 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_daily(model=getattr(args, "model", None), days=args.days)
     if args.command == "relate":
         return cmd_relate(args.items, model=getattr(args, "model", None))
+    if args.command == "bootstrap":
+        try:
+            context = get_project_context(TextStrataStore(workspace_root), args.project)
+        except ValueError as exc:
+            parser.error(str(exc))
+        print(json.dumps(context, ensure_ascii=False, indent=2) if args.json else render_project_context(context), end="" if not args.json else "\n")
+        return 0
+    if args.command == "knowledge-proposals":
+        from .review import list_pending_agent_proposals
+        store = TextStrataStore(workspace_root)
+        try:
+            if args.action == "list":
+                entries = [entry for entry in list_pending_agent_proposals(store) if entry.get("kind") == "article_change"]
+                for entry in entries:
+                    payload = entry["payload"]
+                    print(f"{entry['proposal_id']} {payload['action']} {payload['item_id']}: {payload['reason']}")
+                return 0
+            if not args.proposal_id:
+                parser.error("proposal_id is required")
+            if args.action == "show":
+                print(json.dumps(article_change_proposal(store, args.proposal_id), ensure_ascii=False, indent=2))
+                return 0
+            if not args.reviewer:
+                parser.error("--reviewer is required for apply or reject")
+            entry = finish_article_change(store, args.proposal_id, apply=args.action == "apply", reviewer=args.reviewer)
+            print(f"{entry['status']} {entry['proposal_id']}")
+            return 0
+        except ValueError as exc:
+            parser.error(str(exc))
     if args.command == "completion":
         return cmd_completion(args.shell)
     if args.command == "watch":

@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from textstrata.catalog import Catalog
-from textstrata.__main__ import cmd_retrieval_inspect
+from textstrata.__main__ import cmd_retrieval_inspect, cmd_search
 from textstrata.ingest import ingest_text
 from textstrata.research import research
 from textstrata.retrieval import extract_keywords, retrieve
@@ -66,6 +66,11 @@ class RetrievalTests(unittest.TestCase):
         self.assertFalse(result.sufficient_evidence)
         self.assertEqual(result.reason, "no body-bearing candidates")
 
+    def test_natural_question_uses_safe_partial_match_fallback(self):
+        result = retrieve("How should an agent begin work on navigation?", self.catalog, self.store)
+        self.assertTrue(result.candidates)
+        self.assertIn("ui.navigation", [candidate.item_id for candidate in result.candidates])
+
     def test_research_uses_shared_candidates_and_calls_model_only_with_evidence(self):
         with patch("textstrata.research._call_ollama", return_value="grounded answer [1]") as call:
             result = research("backup manifest", self.store, self.catalog)
@@ -88,6 +93,14 @@ class RetrievalTests(unittest.TestCase):
         self.assertEqual(status, 0)
         self.assertTrue(payload["sufficient_evidence"])
         self.assertEqual(payload["candidates"][0]["item_id"], "ai.local-models")
+
+    def test_cli_search_accepts_natural_question_with_punctuation(self):
+        output = StringIO()
+        with patch("textstrata.__main__._root", return_value=Path(self.tmp.name)):
+            with redirect_stdout(output):
+                status = cmd_search("How should an agent begin work on navigation?", json_output=True)
+        self.assertEqual(status, 0)
+        self.assertIn("ui.navigation", [hit["id"] for hit in json.loads(output.getvalue())])
 
 
 if __name__ == "__main__":
