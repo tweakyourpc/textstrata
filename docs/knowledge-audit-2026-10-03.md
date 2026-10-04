@@ -88,3 +88,35 @@ show which additional facets earn their maintenance cost.
 
 No destructive cleanup is proposed in this checkpoint. The likely near
 duplicate pair and historical overview records require item-level review.
+
+## Post-curation checkpoint, 2026-10-04
+
+The normalized corpus now has 189 articles: 94 reference, 53 note, 15 policy,
+13 architecture note, 8 playbook, and 6 other typed records. Seven records
+have current project-context facets and five are explicitly superseded; the
+other 177 retain their existing metadata. Sixteen records still lack a
+contributor chain. Sixty-four are under 200 words, including intentional
+short records and new concise context articles. Neither count is a deletion
+list.
+
+The local changes added current TextStrata and NeoForge architecture, dated
+state, Google bridge, engineering principles, and agent update workflow
+records. The older `neoforge-internals` and `project-context` bodies were
+preserved and marked superseded. Three high-ranking MarkBase-era overviews
+(`system.manual`, `system.ai-manifest`, and `system.product-positioning`) now
+carry historical titles, dated context, current-authority links, and lower
+retrieval priority; their original body details remain. A reviewed update
+corrected a stale PortBroker reservation name. No article merge or deletion
+was justified by the evidence collected so far.
+
+The deterministic bootstrap and reviewed proposal path are live locally and
+merged to GitHub main. The Google bridge imported and mirrored through the
+same 15-minute wrapper, and the Library hashes for current and curated
+records matched normalized local hashes. The cold-agent and Google-only test
+is in `docs/cold-agent-validation-2026-10-04.md`.
+
+Remaining work is targeted: investigate the 16 provenance gaps from original
+and revision evidence, evaluate the possible Pro Micro near-duplicate pair,
+verify stale service catalog entries against live units before changing them,
+and monitor repeated scheduled Google passes. These records should be handled
+individually; no bulk rewrite or inferred authorship is warranted.
