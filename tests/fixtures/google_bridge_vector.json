@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "action": "ping",
+  "timestamp": 1700000000,
+  "nonce": "0123456789abcdef0123456789abcdef",
+  "payload": {"sample": "text"},
+  "payload_json": "{\"sample\":\"text\"}",
+  "canonical": "1\nping\n1700000000\n0123456789abcdef0123456789abcdef\n{\"sample\":\"text\"}",
+  "secret": "synthetic-test-secret",
+  "signature": "70d1499af2ee8d073b79073c40113d33c4fa5694dcb4d540284e999a439d71c5"
+}

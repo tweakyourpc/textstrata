@@ -136,6 +136,22 @@ approved remote ingest through host-managed `rclone`. See
 `config/control.example.json`; credentials and personal Drive configuration
 stay outside the repository.
 
+The Google Drive source adapter uses a Sheet manifest and read-only Google Docs
+as a deterministic staging source, with optional narrowly scoped Sheet
+acknowledgment. See
+[docs/google-drive-source.md](docs/google-drive-source.md),
+`config/sources.example.yaml`, and `config/google-drive-env.example`;
+install it only with `pip install -e
+'.[google-drive]'`.
+
+An optional signed Google Apps Script bridge provides Inbox ingestion and a
+Drive Library Mirror without local Google OAuth. Library rows explicitly marked
+`Updated` can import guarded Google-side revisions; local conflicts are never
+overwritten. See
+[docs/google-bridge-setup.md](docs/google-bridge-setup.md) for deployment,
+private configuration, and the `ingest google-bridge` / `mirror google-bridge`
+commands.
+
 ## Web ingestion and operations
 
 The expandable **Add knowledge** workspace accepts pasted Markdown directly and natively queues URLs, YouTube videos/channels, documents, images, and text uploads into TextStrata. Converted output lands in the same typed store as direct text ingestion. Direct text is limited to 5 MiB; queued acquisitions are limited to 64 MiB. Browser writes are same-origin only.
