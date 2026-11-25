@@ -24,6 +24,9 @@ PRIVATE_NAME_PATTERNS = (
     re.compile(r"\Ahandoff-[a-z0-9_.-]+\.md\Z"),
     re.compile(r"\Atask\d+[a-z]?-blast-radius\.md\Z"),
     re.compile(r"\Abaseline-summary\.md\Z"),
+    # Dated corpus audits and agent validation runs describe a private workspace and machine.
+    re.compile(r"\Aknowledge-audit-[a-z0-9_.-]+\.md\Z"),
+    re.compile(r"\Acold-agent-validation-[a-z0-9_.-]+\.md\Z"),
 )
 PRIVATE_PATTERNS = (
     re.compile(r"/home/[A-Za-z0-9_.-]+/"),

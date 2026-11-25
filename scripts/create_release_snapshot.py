@@ -24,6 +24,9 @@ PRIVATE_DOCS = (
     "handoff-*.md",
     "task*-blast-radius.md",
     "baseline-summary.md",
+    # Dated corpus audits and agent validation runs describe a private workspace and machine.
+    "knowledge-audit-*.md",
+    "cold-agent-validation-*.md",
 )
 FILES = ("pyproject.toml", "README.md", "LICENSE", "Dockerfile", "docker-compose.yml", ".quality-gate", ".dockerignore", ".gitignore")
 
