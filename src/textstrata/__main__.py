@@ -40,10 +40,7 @@ def _catalog(root: Path) -> Catalog:
 
 
 def _load_items(store: TextStrataStore) -> list:
-    return [
-        build_item(p.read_text(encoding="utf-8"), fallback_id=p.stem)[0]
-        for p in store.normalized_paths()
-    ]
+    return [store.read_item(p) for p in store.normalized_paths()]
 
 
 def _load_item(store: TextStrataStore, item_id: str):

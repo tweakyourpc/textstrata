@@ -2,8 +2,8 @@
 id: system.changelog
 title: TextStrata Release Notes
 type: reference
-version: 0.6.0
-updated: 2026-11-24
+version: 0.6.4
+updated: 2026-11-25
 tags: [system, release-notes, version]
 handling: human_plus_ai
 preservation: rewrite_allowed
@@ -66,3 +66,20 @@ For installation and capability requirements, see the repository README and
 - The library home lists newest first, and Newest and Oldest sorting work with an empty search.
 - `scripts/repair_legacy_ingested_at.py` restores original capture dates for migrated MarkBase items whose ingest time was overwritten by a workspace copy.
 - Existing Markdown and filesystem contracts are unchanged; no migration is required.
+
+## 0.6.1
+
+- About and System info open again from note pages. They previously failed with "pathTable is not defined"; the menu now uses the same dialog code as the library page.
+
+## 0.6.2
+
+- Note pages open in a few hundredths of a second instead of 10 to 13 seconds. The corpus-wide link, score and similarity analysis they need is computed once, cached until a note or the synonyms file changes, and warmed when the server starts. The first page after a change still recomputes it once.
+- Note pages, the MCP server, retrieval results and CLI reports such as `analyze` now show each item's stored ingest time instead of the time the file was read.
+
+## 0.6.3
+
+- The corpus analysis behind note pages takes about 2.4 s instead of 10 s on 322 notes, with identical results: word stemming is memoized and similarity is computed once instead of twice. The first note page after a change now waits about 2.5 s; later pages stay at a few hundredths of a second.
+
+## 0.6.4
+
+- Notes imported from Google Docs show one paragraph per Doc paragraph instead of running together. Rendering only; the stored text and its Library mirror hashes are unchanged.

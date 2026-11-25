@@ -47,7 +47,12 @@ def render_item_html(ctx: RenderContext, skin: Skin = PAPER_SKIN, *, version: st
     }
     for alias, other_id in ctx.item_aliases.items():
         link_resolver.setdefault(alias.casefold(), (other_id, ctx.item_titles.get(other_id, other_id)))
-    html_body = markdown_to_html(item.body, item.provenance.source_url, link_resolver=link_resolver)
+    html_body = markdown_to_html(
+        item.body,
+        item.provenance.source_url,
+        link_resolver=link_resolver,
+        line_paragraphs=item.provenance.source_kind == "google_drive",
+    )
     aliases_json = escape(json.dumps(item.aliases), quote=True)
     escaped_raw = escape(ctx.raw_markdown or "") if ctx.raw_markdown else ""
     toc_html = generate_toc(item.body)

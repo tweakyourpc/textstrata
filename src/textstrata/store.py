@@ -253,6 +253,18 @@ class TextStrataStore:
             metadata["ingested_at"] = item.provenance.ingested_at
             self._write_item_metadata(item.id, metadata)
 
+    def read_item(self, path: Path, fallback_id: str | None = None) -> TextStrataItem:
+        """Build an item from a normalized file with its stored ingest time attached.
+
+        Parsing the file alone gives items without a declared ``ingested_at`` the current
+        time, so every read that shows or uses dates should go through here.
+        """
+        from .ingest import build_item
+
+        item = build_item(path.read_text(encoding="utf-8"), fallback_id=fallback_id or path.stem)[0]
+        self.hydrate_item_metadata(item, path)
+        return item
+
     def hydrate_item_metadata(self, item: TextStrataItem, source_path: Path) -> None:
         metadata = self.item_metadata(item.id)
         ingested_at = metadata.get("ingested_at")

@@ -445,6 +445,7 @@ def score_corpus(
     top_k: int | None = None,
     synonyms: dict[str, str] | None = None,
     policy: SimilarityPolicy = DEFAULT_SIMILARITY_POLICY,
+    similarity_edges: list | None = None,
 ) -> dict[str, KnowledgeScore]:
     """Score every item by how much it enriches the mesh.
 
@@ -460,7 +461,8 @@ def score_corpus(
         return {}
     items_by_id = {it.id: it for it in items}
 
-    sim_edges = build_similarity_edges(
+    # Callers that already built edges with the same arguments can pass them in.
+    sim_edges = similarity_edges if similarity_edges is not None else build_similarity_edges(
         items, threshold=similarity_threshold, top_k=top_k, synonyms=synonyms, policy=policy
     )
     graph_edges: list[tuple[str, str, float]] = [
