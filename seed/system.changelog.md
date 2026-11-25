@@ -2,8 +2,8 @@
 id: system.changelog
 title: TextStrata Release Notes
 type: reference
-version: 0.5.7
-updated: 2026-08-26
+version: 0.6.0
+updated: 2026-11-24
 tags: [system, release-notes, version]
 handling: human_plus_ai
 preservation: rewrite_allowed
@@ -54,3 +54,15 @@ For installation and capability requirements, see the repository README and
 - Suggestions that were simply never adopted are counted rather than listed, and only a suggested tag missing from the final list counts as rejected, so the report does not flag routine authoring as an override.
 - Items published before this release carry no suggestion record and are not reported; nothing needs migrating.
 - Normalized output remains a pure function of the input bytes, and existing HTTP, CLI, MCP, Markdown, and filesystem contracts remain unchanged.
+
+## 0.6.0
+
+- Google Drive integration: a signed Apps Script bridge imports Ready documents from an Inbox folder and mirrors canonical articles to a Library folder, with guarded two-way revision sync and explicit, audited conflict resolution (`sources`, `mirror`, `google-conflict` commands).
+- New `TEXTSTRATA_MIRROR_SINCE` setting stops the mirror from creating Library copies of articles ingested before a date; articles already mirrored keep syncing.
+- Deterministic project bootstrap and reviewed article proposals with stale-write protection (`bootstrap`, `knowledge-proposals` commands).
+- CLI search accepts natural-language questions and ranks them through the trusted retrieval path.
+- Malformed structured frontmatter is rejected before publication.
+- Library dates come from each item's stored ingest time. Previously the web library could show the page-load time for items without a declared `ingested_at`, which also scrambled Recent imports and Recent changes.
+- The library home lists newest first, and Newest and Oldest sorting work with an empty search.
+- `scripts/repair_legacy_ingested_at.py` restores original capture dates for migrated MarkBase items whose ingest time was overwritten by a workspace copy.
+- Existing Markdown and filesystem contracts are unchanged; no migration is required.

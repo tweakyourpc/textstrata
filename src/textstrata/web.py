@@ -28,7 +28,7 @@ from .application.control import control_backup, control_backup_preview, control
 from .application.items import rename_item, update_aliases
 from .application.graph import build_graph_payload
 from .application.item_detail import build_item_render_context
-from .application.library import corpus_view, orphaned_items, render_dashboard, search_library
+from .application.library import corpus_view, orphaned_items, render_dashboard, search_library, sort_by_date
 from .application.reviews import review_queue_payload
 from .application.settings import build_system_info_payload, load_settings_payload, save_settings_payload
 from .application.setup import initialize_workspace, setup_status
@@ -166,10 +166,11 @@ class TextStrataWebApp:
         with self._items_lock:
             if self._items_cache is not None and self._items_fingerprint == fingerprint:
                 return list(self._items_cache)
-        parsed = [
-            build_item(path.read_text(encoding="utf-8"), fallback_id=path.stem)[0]
-            for path in self.store.normalized_paths()
-        ]
+        parsed = []
+        for path in self.store.normalized_paths():
+            item = build_item(path.read_text(encoding="utf-8"), fallback_id=path.stem)[0]
+            self.store.hydrate_item_metadata(item, path)
+            parsed.append(item)
         with self._items_lock:
             self._items_cache = parsed
             self._items_fingerprint = fingerprint
@@ -532,9 +533,12 @@ def create_handler(app: TextStrataWebApp):
                     self.send_header("Location", f"/{legacy_view}")
                     self.end_headers()
                     return
+                sort = query.get("sort", ["newest"])[0].strip()
+                if sort not in ("newest", "oldest"):
+                    sort = "newest"
                 items = list(app.items())
                 dashboard_html, sidebar_extra_html = render_dashboard(items)
-                body = render_library_index(items, skin_from_settings(get_settings(app.store)), version=__version__, dashboard_html=dashboard_html, sidebar_extra_html=sidebar_extra_html)
+                body = render_library_index(sort_by_date(items, sort), skin_from_settings(get_settings(app.store)), version=__version__, dashboard_html=dashboard_html, sidebar_extra_html=sidebar_extra_html, sort=sort)
                 self._html(200, body)
                 return
 
@@ -568,6 +572,8 @@ def create_handler(app: TextStrataWebApp):
                 items = list(app.items())
                 dashboard_html, sidebar_extra_html = render_dashboard(items)
                 if not q:
+                    if sort in ("newest", "oldest"):
+                        items = sort_by_date(items, sort)
                     self._html(200, render_library_index(
                         items,
                         skin_from_settings(get_settings(app.store)),
@@ -576,6 +582,7 @@ def create_handler(app: TextStrataWebApp):
                         page_meta='Use search to find notes across titles, tags, IDs, and full text. <a href="/">View all notes</a>.',
                         dashboard_html=dashboard_html,
                         sidebar_extra_html=sidebar_extra_html,
+                        sort=sort,
                         contributor_filter=contributor_filter,
                     ))
                     return

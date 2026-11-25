@@ -39,7 +39,7 @@ from .vocabulary import (
 )
 
 from . import activity, embeddings, vocabulary
-__version__ = "0.5.7"
+__version__ = "0.6.0"
 
 __all__ = [
     "Catalog", "SearchHit",

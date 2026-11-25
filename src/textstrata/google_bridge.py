@@ -371,6 +371,9 @@ def mirror_bridge(store: TextStrataStore, client: BridgeClient, *, dry_run: bool
     results = import_library_bridge(store, client, dry_run=dry_run, catalog=catalog)
     blocked = {result["record"] for result in results if result["action"] in {"CONFLICT", "ERROR"} or dry_run and result["action"] in {"IMPORT", "RETRY"}}
     excluded = {value.strip() for value in os.environ.get("TEXTSTRATA_MIRROR_EXCLUDE_IDS", "").split(",") if value.strip()}
+    # Items ingested before this ISO date are never newly created in the Library;
+    # already-mirrored items keep syncing.
+    since = os.environ.get("TEXTSTRATA_MIRROR_SINCE", "").strip()[:10]
     try:
         listed = client.call("list_library_status").get("records")
     except BridgeError as exc:
@@ -398,6 +401,10 @@ def mirror_bridge(store: TextStrataStore, client: BridgeClient, *, dry_run: bool
             if remote is not None and remote.get("status") not in {None, "Active", "Pending"}:
                 results.append({"record": item.id, "action": "PENDING"})
                 continue
+            if remote is None and since:
+                store.hydrate_item_metadata(item, path)
+                if item.provenance.ingested_at[:10] < since:
+                    continue
             action = "CREATE" if remote is None else "UNCHANGED" if remote.get("hash") == digest else "UPDATE"
             if action != "UNCHANGED" and not dry_run:
                 client.call("mirror_upsert", {"id": item.id, "title": item.title, "content": canonical, "hash": digest, "topic": str(item.extra.get("topic") or ""), "tags": item.tags, "source": str(item.provenance.source_kind or "local"), "updated": datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()})
