@@ -16,6 +16,11 @@ def item_dt(item: Any, key: str) -> str:
     return str(item.provenance.ingested_at or "")
 
 
+def sort_by_date(items: Sequence[Any], sort: str) -> list[Any]:
+    """Order items by their stored ingest time; ``sort`` is ``newest`` or ``oldest``."""
+    return sorted(items, key=lambda it: item_dt(it, "ingested"), reverse=sort != "oldest")
+
+
 def reason_labels(item: Any, q: str) -> list[str]:
     labels: list[str] = []
     terms = [term for term in re.split(r"\s+", q.lower()) if term]

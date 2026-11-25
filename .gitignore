@@ -9,6 +9,7 @@ textstrata-store/
 .worktrees/
 .env
 .env.*
+!.env.example
 config/sources.yaml
 apps-script/google-bridge/.clasp.json
 apps-script/google-bridge/.clasprc.json

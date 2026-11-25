@@ -158,7 +158,7 @@ the wrapper still exits nonzero so cron monitoring can report the failed pass.
 Create the private log directory before adding this entry:
 
 ```cron
-*/15 * * * * /path/to/textstrata-impl/scripts/google-bridge-sync.sh >> /private/textstrata/logs/google-bridge.log 2>&1
+*/15 * * * * /path/to/textstrata/scripts/google-bridge-sync.sh >> /private/textstrata/logs/google-bridge.log 2>&1
 ```
 
 The local workspace, state directory, environment file, and logs must be
@@ -169,6 +169,12 @@ dry-run output before enabling the schedule. If the canonical workspace
 contains development notes that must stay local, set the private
 `TEXTSTRATA_MIRROR_EXCLUDE_IDS` environment variable to their comma-separated
 canonical IDs. This filter applies to both dry-run and write passes.
+
+To keep an older backlog out of the Library, set `TEXTSTRATA_MIRROR_SINCE` to
+an ISO date such as `2026-09-01`. The mirror then creates Library Docs only for
+articles whose stored ingest time is on or after that date. Articles that
+already have a Library Doc keep syncing regardless of their age, so existing
+mirrors do not go stale.
 
 ## Production checklist
 
