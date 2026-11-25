@@ -82,7 +82,18 @@ def calculate_read_time(markdown_text: str, wpm: int = 238) -> int:
     return max(1, math.floor((words / wpm) + 0.5))
 
 
-def markdown_to_html(markdown: str, source_url: str | None = None, *, link_resolver: dict[str, tuple[str, str]] | None = None) -> str:
+def markdown_to_html(
+    markdown: str,
+    source_url: str | None = None,
+    *,
+    link_resolver: dict[str, tuple[str, str]] | None = None,
+    line_paragraphs: bool = False,
+) -> str:
+    """Render the TextStrata Markdown subset.
+
+    ``line_paragraphs`` treats every non-blank text line as its own paragraph. Text imported
+    from Google Docs stores one Doc paragraph per line, which standard Markdown would merge.
+    """
     lines = markdown.splitlines()
     out: list[str] = []
     paragraph: list[str] = []
@@ -165,6 +176,8 @@ def markdown_to_html(markdown: str, source_url: str | None = None, *, link_resol
         if list_items:
             flush_list()
         paragraph.append(line.strip())
+        if line_paragraphs:
+            flush_paragraph()
 
     if in_code:
         flush_code()

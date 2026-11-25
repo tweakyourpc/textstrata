@@ -212,8 +212,6 @@ def item_page_script(item_id: str) -> str:
       }}catch(e){{content.innerHTML='<p class="danger-text">Failed to load: '+esc(e.message)+'</p>'}}
       d.showModal();
     }}
-    const aboutDlg=document.getElementById("about-dialog");
-    const aboutTitle=document.getElementById("about-title");
     document.querySelectorAll("[data-action]").forEach(btn=>{{
       btn.addEventListener("click",async ()=>{{
         const a=btn.dataset.action;
@@ -231,41 +229,7 @@ def item_page_script(item_id: str) -> str:
         else if(a==="restart-server")window.location.href="/?open=maintenance";
         else if(a==="restart-engine")window.location.href="/?open=maintenance";
         else if(a==="docs"){{ fetch("/item/system.docs.help-system",{{method:"HEAD"}}).then(r=>window.location.href=r.ok?"/item/system.docs.help-system":"/item/system.operations-error-reference").catch(()=>window.location.href="/item/system.operations-error-reference") }}
-        else if(a==="about"||a==="system-info"){{
-          if(aboutTitle) aboutTitle.textContent = a==="about" ? "About" : "System info";
-          try{{
-            const info=await api("/api/textstrata/system-info");
-            const settings=await api("/api/textstrata/settings");
-            const paths=settings.paths||{{}};
-            const it=info.install_type;
-            const sysList=[
-              {{id:"linux-systemd",label:"Linux (systemd)",active:it==="linux-systemd",cmds:["systemctl --user restart textstrata-server","systemctl --user stop textstrata-server","systemctl --user status textstrata-server","journalctl --user -u textstrata-server -f"]}},
-              {{id:"docker",label:"Docker",active:it==="docker",cmds:["docker restart <container>","docker stop <container>","docker logs <container>"]}},
-              {{id:"macos",label:"macOS",active:it==="macos",cmds:["./textstrata restart","./textstrata web","pkill -f 'python3 -m textstrata'"]}},
-              {{id:"windows",label:"Windows",active:it==="windows",cmds:["textstrata restart","textstrata web"]}},
-              {{id:"other",label:"Other / Dev",active:!["linux-systemd","docker","macos","windows"].includes(it),cmds:["./textstrata restart","./textstrata web","./textstrata-server"]}},
-            ];
-            const instructions=sysList.map(s=>
-              '<div class="'+(s.active?"install-active":"install-other")+'">'
-              +'<strong>'+esc(s.label)+(s.active?' <span class="meta">(current)</span>':"")+'</strong>'
-              +'<pre>'+esc(s.cmds.join("\\n"))+'</pre></div>'
-            ).join("");
-            document.getElementById("about-content").innerHTML=
-              '<table>'
-              +'<tr><td>Version</td><td>'+esc(info.version)+'</td></tr>'
-              +'<tr><td>Platform</td><td>'+esc(info.platform+' '+info.platform_release+' ('+info.architecture+')')+'</td></tr>'
-              +'<tr><td>Install type</td><td>'+esc(it)+'</td></tr>'
-              +'<tr><td>Process ID</td><td>'+esc(String(info.pid))+'</td></tr>'
-              +'<tr><td>Docker</td><td>'+(info.docker?"Yes":"No")+'</td></tr>'
-              +'<tr><td>systemd</td><td>'+(info.has_systemd?"Available":"Not available")+'</td></tr>'
-              +'</table>'
-              +'<h3 style="margin:1rem 0 .5rem;font-family:var(--font-ui);font-size:.9rem">Service management</h3>'
-              +instructions
-              +pathTable
-              +'<p class="meta" style="margin-top:.5rem">The highlighted section matches your current install type.</p>';
-          }}catch(e){{document.getElementById("about-content").innerHTML='<p class="danger-text">Failed to load: '+esc(e.message)+'</p>'}}
-          aboutDlg.showModal();
-        }}
+        else if(a==="about"||a==="system-info")openAboutDialog(a);
       }})
     }});
 

@@ -12,7 +12,6 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from .catalog import Catalog
-from .ingest import build_item
 from .store import TextStrataStore
 
 
@@ -155,7 +154,7 @@ def retrieve(
         if not path:
             continue
         try:
-            item, _, _ = build_item(path.read_text(encoding="utf-8"), fallback_id=hit.id)
+            item = store.read_item(path, fallback_id=hit.id)
         except (OSError, UnicodeError, ValueError):
             continue
         if not item.body or len(item.body.strip()) < min_body_chars:

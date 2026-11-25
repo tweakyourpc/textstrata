@@ -92,7 +92,7 @@ class PresentationTests(unittest.TestCase):
         self.assertIn('window.speechSynthesis.cancel();raSpeakCurrent()', html)
         self.assertNotIn('window.speechSynthesis.pause()', html)
         self.assertIn('if(d&&!d.open)d.showModal()', html)
-        self.assertIn('aboutTitle.textContent = a===\"about\" ? \"About\" : \"System info\"', html)
+        self.assertIn('else if(a===\"about\"||a===\"system-info\")openAboutDialog(a);', html)
         self.assertNotIn('/api/acquisition/maintenance/settings', html)
 
     def test_keyboard_shortcuts_do_not_capture_f(self):

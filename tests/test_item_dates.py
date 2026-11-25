@@ -73,6 +73,27 @@ class ItemDateTests(unittest.TestCase):
         self.assertEqual([i.id for i in sort_by_date(items, "newest")], ["note.newer", "aaa.middle", "note.older"])
         self.assertEqual([i.id for i in sort_by_date(items, "oldest")], ["note.older", "aaa.middle", "note.newer"])
 
+    def test_note_page_item_uses_stored_ingest_time(self) -> None:
+        item = self.app.item_by_id("note.newer")
+        self.assertEqual(item.provenance.ingested_at, "2026-11-22T18:56:54+00:00")
+
+    def test_mcp_reads_use_stored_ingest_time(self) -> None:
+        from textstrata.mcp_server import TextStrataMCP
+
+        mcp = TextStrataMCP(self.tmp)
+        try:
+            self.assertEqual(mcp._read_item("note.older").provenance.ingested_at, "2026-08-01T00:00:00+00:00")
+            dates = {i.id: i.provenance.ingested_at for i in mcp._all_items()}
+            self.assertEqual(dates["aaa.middle"], "2026-10-01T00:00:00+00:00")
+        finally:
+            mcp.catalog.close()
+
+    def test_cli_item_loader_uses_stored_ingest_time(self) -> None:
+        from textstrata.__main__ import _load_items
+
+        dates = {i.id: i.provenance.ingested_at for i in _load_items(self.app.store)}
+        self.assertEqual(dates["note.newer"], "2026-11-22T18:56:54+00:00")
+
     def test_repair_script_restores_legacy_capture_date(self) -> None:
         store = self.app.store
         (store.normalized_dir / "legacy.markbase.old.md").write_text(LEGACY, encoding="utf-8")

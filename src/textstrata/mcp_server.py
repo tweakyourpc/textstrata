@@ -103,16 +103,14 @@ class TextStrataMCP:
         path = self.store.normalized_path_for_id(item_id)
         if path is None:
             raise FileNotFoundError(item_id)
-        item, _, _ = build_item(path.read_text(encoding="utf-8"), fallback_id=item_id)
-        return item
+        return self.store.read_item(path, fallback_id=item_id)
 
     def _all_items(self) -> list[TextStrataItem]:
         if self._all_items_cache is not None:
             return self._all_items_cache
         items: list[TextStrataItem] = []
         for path in self.store.normalized_paths():
-            item, _, _ = build_item(path.read_text(encoding="utf-8"), fallback_id=path.stem)
-            items.append(item)
+            items.append(self.store.read_item(path))
         self._all_items_cache = items
         return items
 

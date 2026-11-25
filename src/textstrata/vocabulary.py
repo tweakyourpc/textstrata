@@ -31,6 +31,7 @@ the old raw tokenizer in ``similarity.py``.
 
 from __future__ import annotations
 
+import functools
 import json
 import re
 import unicodedata
@@ -205,6 +206,7 @@ def _cvc(word: str) -> bool:
     return word[-1] not in "wxy"
 
 
+@functools.lru_cache(maxsize=262144)
 def stem(word: str) -> str:
     """Return the Porter stem of a single lowercase alphabetic token.
 

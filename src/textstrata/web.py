@@ -27,7 +27,7 @@ from .application.acquisition import acquisition_maintenance_settings_payload, a
 from .application.control import control_backup, control_backup_preview, control_restore, control_restore_preview, control_status
 from .application.items import rename_item, update_aliases
 from .application.graph import build_graph_payload
-from .application.item_detail import build_item_render_context
+from .application.item_detail import analyze_corpus, build_item_render_context
 from .application.library import corpus_view, orphaned_items, render_dashboard, search_library, sort_by_date
 from .application.reviews import review_queue_payload
 from .application.settings import build_system_info_payload, load_settings_payload, save_settings_payload
@@ -91,6 +91,11 @@ class TextStrataWebApp:
         # refreshed when the override file's mtime changes.
         self._synonyms_cache: dict[str, str] | None = None
         self._synonyms_mtime: int | None = None
+        # Corpus-wide link/score/similarity analysis for item pages, keyed by the same store
+        # fingerprint as the items cache plus the synonyms file, so any note change or
+        # synonym edit invalidates it.
+        self._analysis_cache = None
+        self._analysis_key: tuple | None = None
         # Set when a graceful restart has been requested via the web UI.
         self._restart_requested = threading.Event()
         self._server = None  # set by serve()
@@ -166,15 +171,25 @@ class TextStrataWebApp:
         with self._items_lock:
             if self._items_cache is not None and self._items_fingerprint == fingerprint:
                 return list(self._items_cache)
-        parsed = []
-        for path in self.store.normalized_paths():
-            item = build_item(path.read_text(encoding="utf-8"), fallback_id=path.stem)[0]
-            self.store.hydrate_item_metadata(item, path)
-            parsed.append(item)
+        parsed = [self.store.read_item(path) for path in self.store.normalized_paths()]
         with self._items_lock:
             self._items_cache = parsed
             self._items_fingerprint = fingerprint
         return list(parsed)
+
+    def corpus_analysis(self):
+        """Return the cached corpus analysis, recomputing it only when the corpus changed."""
+        corpus = self.items()
+        synonyms = self.synonyms()
+        key = (self._items_fingerprint, self._synonyms_mtime)
+        with self._items_lock:
+            if self._analysis_cache is not None and self._analysis_key == key:
+                return self._analysis_cache
+        analysis = analyze_corpus(corpus, synonyms)
+        with self._items_lock:
+            self._analysis_cache = analysis
+            self._analysis_key = key
+        return analysis
 
     def synonyms(self) -> dict[str, str]:
         """Effective vocabulary map for this store (base + synonyms.json).
@@ -223,7 +238,7 @@ class TextStrataWebApp:
         path = self.store.normalized_path_for_id(item_id)
         if path is None:
             raise FileNotFoundError(item_id)
-        return build_item(path.read_text(encoding="utf-8"), fallback_id=item_id)[0]
+        return self.store.read_item(path, fallback_id=item_id)
 
     def sync_upstream(self):
         if not self.gateway or not self._sync_lock.acquire(blocking=False):
@@ -687,6 +702,7 @@ def create_handler(app: TextStrataWebApp):
                     corpus,
                     synonyms=app.synonyms(),
                     raw_markdown=raw_path.read_text(encoding="utf-8") if raw_path else None,
+                    analysis=app.corpus_analysis(),
                 )
                 if query.get("format", ["html"])[0] == "text":
                     self._send(200, "text/plain; charset=utf-8", render_text(ctx).encode("utf-8"))
@@ -1244,6 +1260,8 @@ def serve(workspace_root: Path, host: str = "0.0.0.0", port: int = 8700) -> None
     server.socket.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
     server.daemon_threads = True
     app._server = server
+    # Warm the item-page analysis so the first note opened after a start is fast too.
+    threading.Thread(target=app.corpus_analysis, name="textstrata-warm-analysis", daemon=True).start()
 
     try:
         print(f"textstrata web listening on http://{host}:{port}", flush=True)
